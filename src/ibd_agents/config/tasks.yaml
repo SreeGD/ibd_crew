@@ -1,0 +1,48 @@
+research_task:
+  description: >
+    Process all data files in the data/ directory per Framework v4.0
+    source hierarchy.
+
+    PROCESSING ORDER:
+    1. IBD XLS files first (structured, highest weight, all 5 ratings)
+    2. IBD PDF files (Smart Table broadest, then Top 200, then remaining)
+    3. Motley Fool PDFs (supplementary validation)
+    4. Schwab theme PDFs last (tagging, not primary screening)
+
+    FOR EACH STOCK:
+    - Extract all 5 IBD ratings: Composite, RS, EPS, SMR, Acc/Dis
+    - Calculate multi-source validation score (exact Framework v4.0 points)
+    - Tag Schwab theme memberships
+    - Flag IBD Keep candidates (Composite >= 93 AND RS >= 90)
+    - Assign preliminary tier (T1/T2/T3) using rating thresholds
+    - Separate stocks from ETFs
+
+    Return ONLY a valid JSON object matching the ResearchOutput schema.
+  expected_output: >
+    JSON object with stocks (100-200), etfs, sector_patterns,
+    data_sources_used, data_sources_failed, total_securities_scanned,
+    ibd_keep_candidates, multi_source_validated, analysis_date, summary.
+  agent: research_agent
+
+analyst_task:
+  description: >
+    Analyze Research Agent output per Framework v4.0.
+
+    FOR EACH STOCK WITH RATINGS:
+    1. Apply all 4 elite screening filters (EPS>=85, RS>=75, SMR A/B/B-, Acc/Dis A/B/B-)
+    2. Assign tier (T1 Momentum / T2 Quality Growth / T3 Defensive)
+    3. Flag IBD Keep candidates (Comp>=93 AND RS>=90)
+    4. Score conviction (1-10) with CAN SLIM reasoning
+    5. Identify strengths, weaknesses, catalyst
+
+    SECTOR ANALYSIS:
+    - Calculate sector score using Framework formula
+    - Rank sectors by score
+    - Rank stocks within each sector (Comp -> RS -> EPS desc)
+
+    OUTPUT: Top 50 stocks with full analysis, sector rankings, IBD keeps.
+  expected_output: >
+    JSON object with rated_stocks (top 50), unrated_stocks,
+    sector_rankings, ibd_keeps, elite_filter_summary,
+    tier_distribution, methodology_notes, analysis_date, summary.
+  agent: analyst_agent

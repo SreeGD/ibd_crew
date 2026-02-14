@@ -1,0 +1,10 @@
+{
+  "_comment": "Golden dataset for Agent 03 Rotation Detector. Generated from SAMPLE_IBD_STOCKS + PADDING_STOCKS with no sector_patterns.",
+  "verdict": "none",
+  "signals_active": 1,
+  "rotation_type": "none",
+  "regime": "bull",
+  "confidence": 18,
+  "triggered_signals": ["IBD Keep Migration"],
+  "notes": "Sample data is MINING-heavy with high ratings overall. Bull regime (strong tier distribution, high breadth). Only IBD Keep Migration triggers because no cluster holds >40% of keeps (commodity at 38.9%). Leadership Change not triggered because no SectorPatterns provided in test research output."
+}

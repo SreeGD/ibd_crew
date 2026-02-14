@@ -1,0 +1,30 @@
+{
+  "_meta": {
+    "description": "Golden dataset for Agent 10: Executive Summary Synthesizer",
+    "version": "1.0",
+    "created": "2026-02-10",
+    "note": "Expected output constraints for synthesizer pipeline tests"
+  },
+  "expected_key_numbers_fields": 23,
+  "expected_min_connections": 5,
+  "expected_action_items_range": [3, 5],
+  "expected_synthesis_source": "template",
+  "expected_thesis_min_length": 200,
+  "expected_narrative_min_length": 100,
+  "expected_risk_reward_min_length": 100,
+  "expected_market_context_min_length": 100,
+  "expected_summary_min_length": 50,
+  "contradiction_checks": [
+    "sector_concentration_vs_strategy",
+    "bear_regime_vs_offensive_tiers",
+    "risk_not_approved_vs_optimistic_returns",
+    "fast_rotation_vs_low_turnover"
+  ],
+  "connection_agents_referenced": [
+    "Rotation Detector (Agent 03)",
+    "Sector Strategist (Agent 04)",
+    "Portfolio Manager (Agent 05)",
+    "Risk Officer (Agent 06)",
+    "Returns Projector (Agent 07)"
+  ]
+}

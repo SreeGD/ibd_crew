@@ -1,0 +1,54 @@
+{
+  "_meta": {
+    "description": "Golden dataset for Research Agent — expected output from SAMPLE_IBD_STOCKS",
+    "version": "1.0",
+    "created": "2026-02-07",
+    "framework": "IBD Momentum Framework v4.0"
+  },
+  "expected_keep_candidates": [
+    "MU", "CLS", "FIX", "KGC", "NEM", "GOOGL", "PLTR",
+    "AEM", "AGI", "TFPM", "RGLD", "SCCO", "HWM", "KLAC",
+    "TPR", "GS", "GMED"
+  ],
+  "expected_keep_candidates_note": "All stocks with Composite>=93 AND RS>=90",
+  "expected_tier_assignments": {
+    "MU":    {"tier": 1, "comp": 99, "rs": 99, "eps": 81},
+    "CLS":   {"tier": 1, "comp": 99, "rs": 97, "eps": 99},
+    "FIX":   {"tier": 1, "comp": 99, "rs": 96, "eps": 99},
+    "KGC":   {"tier": 1, "comp": 99, "rs": 96, "eps": 96},
+    "NEM":   {"tier": 1, "comp": 99, "rs": 95, "eps": 91},
+    "GOOGL": {"tier": 1, "comp": 99, "rs": 94, "eps": 92},
+    "PLTR":  {"tier": 1, "comp": 99, "rs": 93, "eps": 99},
+    "AEM":   {"tier": 1, "comp": 99, "rs": 92, "eps": 98},
+    "AGI":   {"tier": 1, "comp": 99, "rs": 92, "eps": 97},
+    "TFPM":  {"tier": 1, "comp": 99, "rs": 92, "eps": 99},
+    "RGLD":  {"tier": 1, "comp": 99, "rs": 90, "eps": 95},
+    "GE":    {"tier": 2, "comp": 99, "rs": 89, "eps": 98, "note": "RS 89 < T1 threshold 90"},
+    "LLY":   {"tier": 2, "comp": 99, "rs": 86, "eps": 98, "note": "RS 86 < T1 threshold 90"},
+    "ISRG":  {"tier": 2, "comp": 99, "rs": 80, "eps": 96, "note": "RS 80 = T2 threshold"},
+    "APP":   {"tier": 1, "comp": 98, "rs": 95, "eps": 80, "note": "EPS 80 = T1 threshold"},
+    "SCCO":  {"tier": 2, "comp": 98, "rs": 94, "eps": 79, "note": "EPS 79 < T1 threshold 80"},
+    "GMED":  {"tier": 2, "comp": 98, "rs": 91, "eps": 95},
+    "HWM":   {"tier": 1, "comp": 98, "rs": 90, "eps": 99},
+    "AVGO":  {"tier": 2, "comp": 98, "rs": 88, "eps": 99, "note": "RS 88 < T1 threshold 90"},
+    "NVDA":  {"tier": 2, "comp": 98, "rs": 81, "eps": 99, "note": "RS 81 < T1 threshold 90"},
+    "KLAC":  {"tier": 1, "comp": 97, "rs": 94, "eps": 96},
+    "TPR":   {"tier": 2, "comp": 97, "rs": 93, "eps": 94},
+    "GS":    {"tier": 2, "comp": 93, "rs": 91, "eps": 76, "note": "EPS 76 = T2 range"}
+  },
+  "expected_sectors": [
+    "CHIPS", "COMPUTER", "BUILDING", "MINING", "INTERNET",
+    "SOFTWARE", "AEROSPACE", "MEDICAL", "CONSUMER", "FINANCE"
+  ],
+  "expected_cap_sizes": {
+    "MU": "large", "CLS": "large", "FIX": "large", "KGC": "mid",
+    "NEM": "large", "GOOGL": "large", "PLTR": "large", "AEM": "large",
+    "AGI": "mid", "TFPM": "mid", "RGLD": "mid", "GE": "large",
+    "LLY": "large", "ISRG": "large", "APP": "large", "SCCO": "large",
+    "GMED": "mid", "HWM": "large", "AVGO": "large", "NVDA": "large",
+    "KLAC": "large", "TPR": "mid", "GS": "large"
+  },
+  "expected_cap_sizes_note": "large (>$10B), mid ($2B-$10B), small (<$2B)",
+  "expected_min_stocks": 50,
+  "expected_min_sectors": 5
+}

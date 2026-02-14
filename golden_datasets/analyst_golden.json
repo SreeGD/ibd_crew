@@ -1,0 +1,49 @@
+{
+  "_meta": {
+    "description": "Golden dataset for Analyst Agent — expected output from SAMPLE_IBD_STOCKS",
+    "version": "1.0",
+    "created": "2026-02-10",
+    "framework": "IBD Momentum Framework v4.0"
+  },
+  "expected_tier_assignments": {
+    "MU":    {"tier": 1, "comp": 99, "rs": 99, "eps": 81, "note": "EPS 81 >= 80 T1 threshold"},
+    "CLS":   {"tier": 1, "comp": 99, "rs": 97, "eps": 99},
+    "FIX":   {"tier": 1, "comp": 99, "rs": 96, "eps": 99},
+    "KGC":   {"tier": 1, "comp": 99, "rs": 96, "eps": 96},
+    "NEM":   {"tier": 1, "comp": 99, "rs": 95, "eps": 91},
+    "GOOGL": {"tier": 1, "comp": 99, "rs": 94, "eps": 92},
+    "PLTR":  {"tier": 1, "comp": 99, "rs": 93, "eps": 99},
+    "AEM":   {"tier": 1, "comp": 99, "rs": 92, "eps": 98},
+    "AGI":   {"tier": 1, "comp": 99, "rs": 92, "eps": 97},
+    "TFPM":  {"tier": 1, "comp": 99, "rs": 92, "eps": 99},
+    "RGLD":  {"tier": 1, "comp": 99, "rs": 90, "eps": 95, "note": "RS 90 = T1 threshold"},
+    "APP":   {"tier": 1, "comp": 98, "rs": 95, "eps": 80, "note": "EPS 80 = T1 threshold"},
+    "HWM":   {"tier": 1, "comp": 98, "rs": 90, "eps": 99},
+    "KLAC":  {"tier": 1, "comp": 97, "rs": 94, "eps": 96},
+    "GMED":  {"tier": 1, "comp": 98, "rs": 91, "eps": 95, "note": "98>=95, 91>=90, 95>=80 -> T1"},
+    "TPR":   {"tier": 1, "comp": 97, "rs": 93, "eps": 94, "note": "97>=95, 93>=90, 94>=80 -> T1"},
+    "GE":    {"tier": 2, "comp": 99, "rs": 89, "eps": 98, "note": "RS 89 < T1 threshold 90"},
+    "LLY":   {"tier": 2, "comp": 99, "rs": 86, "eps": 98, "note": "RS 86 < T1 threshold 90"},
+    "ISRG":  {"tier": 2, "comp": 99, "rs": 80, "eps": 96, "note": "RS 80 < T1 threshold 90"},
+    "SCCO":  {"tier": 2, "comp": 98, "rs": 94, "eps": 79, "note": "EPS 79 < T1 threshold 80"},
+    "AVGO":  {"tier": 2, "comp": 98, "rs": 88, "eps": 99, "note": "RS 88 < T1 threshold 90"},
+    "NVDA":  {"tier": 2, "comp": 98, "rs": 81, "eps": 99, "note": "RS 81 < T1 threshold 90"},
+    "GS":    {"tier": 2, "comp": 93, "rs": 91, "eps": 76, "note": "EPS 76 >= T2 threshold 75"}
+  },
+  "expected_ibd_keeps": [
+    "MU", "CLS", "FIX", "KGC", "NEM", "GOOGL", "PLTR",
+    "AEM", "AGI", "TFPM", "RGLD", "APP", "SCCO", "HWM",
+    "KLAC", "TPR", "GS", "GMED"
+  ],
+  "expected_ibd_keeps_note": "All stocks with Composite>=93 AND RS>=90. Note GMED(98/91) qualifies.",
+  "expected_elite_all_pass_note": "Elite requires EPS>=85, RS>=75, SMR A/B/B-, Acc/Dis A/B/B-. MU has EPS 81 < 85 so fails EPS elite filter even though T1. GS has EPS 76 < 85 so fails. SCCO has EPS 79 < 85 so fails.",
+  "expected_top_sector": "MINING",
+  "expected_top_sector_note": "6 stocks with avg Comp ~98.8, avg RS ~93.5, high elite%, high multi-list%",
+  "expected_valuation_ranges": {
+    "_note": "Approximate ranges for key stocks — estimated from sector baselines + IBD ratings",
+    "MU":   {"sector": "CHIPS",   "pe_range": [25, 45], "beta_range": [1.3, 1.8], "risk_rating": ["Good", "Moderate", "Excellent"]},
+    "GS":   {"sector": "FINANCE", "pe_range": [12, 22], "beta_range": [1.0, 1.5], "risk_rating": ["Good", "Moderate"]},
+    "PLTR": {"sector": "SOFTWARE", "pe_range": [40, 75], "beta_range": [1.2, 1.8], "risk_rating": ["Good", "Moderate"]},
+    "NEM":  {"sector": "MINING",  "pe_range": [15, 28], "beta_range": [1.4, 2.0], "risk_rating": ["Good", "Moderate"]}
+  }
+}

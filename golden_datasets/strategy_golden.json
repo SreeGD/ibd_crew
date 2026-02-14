@@ -1,0 +1,12 @@
+{
+  "regime": "bull",
+  "min_sectors": 8,
+  "cash_min": 2.0,
+  "cash_max": 5.0,
+  "tier_target_ranges": {
+    "T1": [35.0, 45.0],
+    "T2": [25.0, 45.0],
+    "T3": [15.0, 35.0],
+    "Cash": [2.0, 15.0]
+  }
+}

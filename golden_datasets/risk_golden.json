@@ -1,0 +1,6 @@
+{
+  "check_count": 10,
+  "stress_scenario_count": 3,
+  "sleep_well_min": 1,
+  "sleep_well_max": 10
+}

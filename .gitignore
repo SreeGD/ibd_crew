@@ -1,0 +1,130 @@
+# ============================================================================
+# Python & Virtual Environments
+# ============================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ============================================================================
+# Virtual Environment
+# ============================================================================
+venv/
+ENV/
+env/
+.venv/
+
+# ============================================================================
+# IDE & Editor
+# ============================================================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+.project
+.pydevproject
+.settings/
+*.sublime-project
+*.sublime-workspace
+
+# ============================================================================
+# Testing & Coverage
+# ============================================================================
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.hypothesis/
+junit/
+
+# ============================================================================
+# Type Checking & Linting
+# ============================================================================
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pylint.d/
+.ruff_cache/
+
+# ============================================================================
+# Project-Specific
+# ============================================================================
+# Logs
+logs/
+*.log
+*.log.*
+
+# Cache (file operation caching)
+.cache/
+*.cache
+
+# Output directory
+output/
+~$*.xlsx
+
+# Environment variables (contains secrets)
+.env
+.env.local
+.env.*.local
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*~
+
+# Data directory (large PDFs, XLS files)
+data/
+
+# ============================================================================
+# OS Files
+# ============================================================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# ============================================================================
+# IDE Generated Files
+# ============================================================================
+.vscode/launch.json
+.vscode/settings.json
+.vscode/extensions.json
+*.code-workspace
+
+# ============================================================================
+# Generated Documentation
+# ============================================================================
+docs/_build/
+site/
+
+# ============================================================================
+# Allow these files even if patterns above match
+# ============================================================================
+!.gitkeep
+!.github/

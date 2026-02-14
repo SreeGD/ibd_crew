@@ -1,0 +1,7 @@
+{
+  "scenario_count": 3,
+  "benchmark_count": 3,
+  "caveats_min": 3,
+  "drawdown_with_stops_max": 18.5,
+  "tier_mix_count": 3
+}

@@ -1,0 +1,25 @@
+[project]
+name = "ibd-crew"
+version = "0.1.0"
+description = "IBD Momentum Investment Framework v4.0 — 8-Agent CrewAI System"
+requires-python = ">=3.12"
+dependencies = [
+    "crewai[tools]>=0.102.0",
+    "pydantic>=2.0",
+    "openpyxl>=3.1",
+    "xlrd>=2.0",
+    "pdfplumber>=0.11",
+    "pandas>=2.0",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = [
+    "schema: Schema validation tests (no LLM)",
+    "llm: Tests that call real LLM agent",
+    "behavior: Behavioral boundary tests",
+    "integration: Cross-agent integration tests",
+]
