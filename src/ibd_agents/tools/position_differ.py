@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
+from dataclasses import dataclass, field as dc_field
 from typing import Dict, List
 
 try:
@@ -63,6 +64,236 @@ def _buy_priority(selection_source: str | None, conviction: int) -> str:
     if conviction >= 7:
         return "MEDIUM"
     return "LOW"
+
+
+# ---------------------------------------------------------------------------
+# Sell Quality Gate Constants
+# ---------------------------------------------------------------------------
+
+# Rule 1: High-conviction T1 shield
+HIGH_CONVICTION_THRESHOLD = 8       # conviction >= this
+HIGH_CONVICTION_TIER = 1            # must be T1
+
+# Rule 2: Strong ETF protection
+STRONG_ETF_RANK_THRESHOLD = 10      # etf_rank <= this
+STRONG_ETF_SCORE_THRESHOLD = 70.0   # etf_score >= this
+
+# Rule 3: Bear-hedge symbols preserved in bear regime
+BEAR_HEDGE_SYMBOLS = {"GLD", "SLV", "TLT", "IAU", "SHY", "IEF", "SGOL", "GLDM"}
+
+# Rule 4: Analyst-rated quality gate
+QUALITY_COMPOSITE_THRESHOLD = 95    # composite >= this
+QUALITY_RS_THRESHOLD = 90           # rs >= this
+QUALITY_SHARPE_THRESHOLD = 1.0      # sharpe >= this
+
+# Rule 5: Turnover cap
+MAX_TURNOVER_RATIO = 0.50           # max 50% of actions can be SELL+BUY
+
+# Rule 6: Graduated sell target
+GRADUATED_TRIM_TARGET_PCT = 0.4     # target_pct for converted positions
+GRADUATED_TRIM_WEEK = 3             # week for converted trims
+
+
+# ---------------------------------------------------------------------------
+# Sell Quality Gate
+# ---------------------------------------------------------------------------
+
+@dataclass
+class SellQualityContext:
+    """Lookup data for sell quality gate decisions."""
+    # symbol -> {tier, conviction, composite_rating, rs_rating, sharpe_ratio, sector}
+    stock_map: dict[str, dict] = dc_field(default_factory=dict)
+    # symbol -> {etf_rank, etf_score, conviction, tier}
+    etf_map: dict[str, dict] = dc_field(default_factory=dict)
+    # Market regime: "bull", "bear", "neutral", or None
+    regime: str | None = None
+
+
+def build_sell_quality_context(
+    analyst_output=None,
+    rotation_output=None,
+) -> SellQualityContext:
+    """Build lookup context from analyst and rotation data.
+
+    Returns empty context if no data is provided (no conversions will happen).
+    """
+    ctx = SellQualityContext()
+
+    if analyst_output is not None:
+        for rs in analyst_output.rated_stocks:
+            ctx.stock_map[rs.symbol] = {
+                "tier": rs.tier,
+                "conviction": rs.conviction,
+                "composite_rating": rs.composite_rating,
+                "rs_rating": rs.rs_rating,
+                "sharpe_ratio": getattr(rs, "sharpe_ratio", None),
+                "sector": rs.sector,
+            }
+        for etf in analyst_output.rated_etfs:
+            ctx.etf_map[etf.symbol] = {
+                "tier": etf.tier,
+                "etf_rank": etf.etf_rank,
+                "etf_score": etf.etf_score,
+                "conviction": etf.conviction,
+            }
+
+    if rotation_output is not None:
+        ctx.regime = rotation_output.market_regime.regime
+
+    return ctx
+
+
+def _check_sell_shield(
+    action: PositionAction,
+    ctx: SellQualityContext,
+) -> tuple[bool, str]:
+    """Check if a SELL action should be shielded (converted to TRIM).
+
+    Returns (should_shield, reason). Only one rule needs to match.
+    Rules are checked in priority order.
+    """
+    sym = action.symbol
+
+    # Rule 3: Bear-hedge preservation (check first — regime-specific)
+    if ctx.regime == "bear" and sym in BEAR_HEDGE_SYMBOLS:
+        return True, f"Bear-hedge preserved in bear regime ({sym})"
+
+    # Rule 1: High-conviction T1 shield
+    stock_info = ctx.stock_map.get(sym)
+    if stock_info:
+        if (stock_info["conviction"] >= HIGH_CONVICTION_THRESHOLD
+                and stock_info["tier"] == HIGH_CONVICTION_TIER):
+            return True, (
+                f"High-conviction T1 shield (conviction={stock_info['conviction']}, "
+                f"tier={stock_info['tier']})"
+            )
+
+        # Rule 4: Analyst-rated quality gate
+        sharpe = stock_info.get("sharpe_ratio")
+        if (stock_info["composite_rating"] >= QUALITY_COMPOSITE_THRESHOLD
+                and stock_info["rs_rating"] >= QUALITY_RS_THRESHOLD
+                and sharpe is not None
+                and sharpe >= QUALITY_SHARPE_THRESHOLD):
+            return True, (
+                f"Quality gate: Comp={stock_info['composite_rating']}, "
+                f"RS={stock_info['rs_rating']}, Sharpe={sharpe:.2f}"
+            )
+
+    # Rule 2: Strong ETF protection
+    etf_info = ctx.etf_map.get(sym)
+    if etf_info:
+        if etf_info["etf_rank"] <= STRONG_ETF_RANK_THRESHOLD:
+            return True, f"Strong ETF (rank #{etf_info['etf_rank']})"
+        if etf_info["etf_score"] >= STRONG_ETF_SCORE_THRESHOLD:
+            return True, f"Strong ETF (score={etf_info['etf_score']:.1f})"
+
+    return False, ""
+
+
+def apply_sell_quality_gate(
+    actions: list[PositionAction],
+    ctx: SellQualityContext,
+    total_value: float = 1_520_000.0,
+) -> list[PositionAction]:
+    """Review SELL actions and convert eligible ones to graduated TRIMs.
+
+    Applies per-position shields (rules 1-4), then turnover cap (rule 5).
+    Converted TRIMs get a small target_pct and later-week scheduling (rule 6).
+
+    Args:
+        actions: List of PositionAction from diff_positions()
+        ctx: SellQualityContext with analyst/rotation data
+        total_value: Portfolio total value for dollar_change calculations
+
+    Returns:
+        Modified list of PositionAction with some SELLs converted to TRIMs
+    """
+    if not ctx.stock_map and not ctx.etf_map and ctx.regime is None:
+        # No analyst or regime data — cannot evaluate quality, return unchanged
+        return actions
+
+    converted_indices: list[int] = []
+    reasons: dict[str, str] = {}
+
+    # --- Pass 1: Per-position shields (rules 1-4) ---
+    for idx, action in enumerate(actions):
+        if action.action_type != "SELL":
+            continue
+
+        should_shield, reason = _check_sell_shield(action, ctx)
+        if should_shield:
+            converted_indices.append(idx)
+            reasons[action.symbol] = reason
+
+    # --- Pass 2: Turnover cap (rule 5) ---
+    remaining_sell_count = sum(
+        1 for i, a in enumerate(actions)
+        if a.action_type == "SELL" and i not in converted_indices
+    )
+    buy_count = sum(1 for a in actions if a.action_type == "BUY")
+    total_actions = len(actions)
+
+    if total_actions >= 10:
+        churn_count = remaining_sell_count + buy_count
+        churn_ratio = churn_count / total_actions
+
+        if churn_ratio > MAX_TURNOVER_RATIO:
+            target_churn = int(MAX_TURNOVER_RATIO * total_actions)
+            excess = churn_count - target_churn
+
+            _PRI_ORDER = {"LOW": 0, "MEDIUM": 1, "HIGH": 2}
+            remaining_sells = [
+                (idx, actions[idx])
+                for idx in range(len(actions))
+                if actions[idx].action_type == "SELL"
+                and idx not in converted_indices
+            ]
+            remaining_sells.sort(
+                key=lambda x: (_PRI_ORDER.get(x[1].priority, 1), abs(x[1].dollar_change))
+            )
+
+            for i, (idx, action) in enumerate(remaining_sells):
+                if i >= excess:
+                    break
+                converted_indices.append(idx)
+                reasons[action.symbol] = "Turnover cap — lowest-priority sell converted"
+
+    # --- Pass 3: Apply conversions (rule 6: graduated trim) ---
+    converted_set = set(converted_indices)
+    result: list[PositionAction] = []
+
+    for idx, action in enumerate(actions):
+        if idx in converted_set:
+            target = GRADUATED_TRIM_TARGET_PCT
+            dollar_change = (target - action.current_pct) / 100.0 * total_value
+            reason = reasons.get(action.symbol, "Quality gate")
+
+            result.append(PositionAction(
+                symbol=action.symbol,
+                action_type="TRIM",
+                cap_size=action.cap_size,
+                current_pct=action.current_pct,
+                target_pct=round(target, 2),
+                dollar_change=round(dollar_change, 2),
+                priority="LOW",
+                week=GRADUATED_TRIM_WEEK,
+                rationale=(
+                    f"Reduced (not liquidated): {reason}. "
+                    f"Trim from {action.current_pct:.1f}% to {target}%"
+                ),
+                sharpe_ratio=action.sharpe_ratio,
+                alpha_pct=action.alpha_pct,
+            ))
+        else:
+            result.append(action)
+
+    if converted_indices:
+        logger.info(
+            f"[Sell Quality Gate] Converted {len(converted_indices)} SELLs to TRIMs: "
+            f"{[actions[i].symbol for i in sorted(converted_indices)]}"
+        )
+
+    return result
 
 
 # ---------------------------------------------------------------------------

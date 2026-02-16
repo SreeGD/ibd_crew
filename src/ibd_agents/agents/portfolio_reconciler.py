@@ -46,7 +46,9 @@ from ibd_agents.tools.portfolio_reader import (
 )
 from ibd_agents.tools.position_differ import (
     PositionDifferTool,
+    apply_sell_quality_gate,
     build_implementation_plan,
+    build_sell_quality_context,
     compute_money_flow,
     compute_transformation_metrics,
     diff_positions,
@@ -179,12 +181,26 @@ def run_reconciler_pipeline(
     # Step 2: Diff current vs recommended
     actions = diff_positions(current_holdings, portfolio_output)
     logger.info(
-        f"[Agent 08] Actions: "
+        f"[Agent 08] Diff: "
         f"{sum(1 for a in actions if a.action_type == 'SELL')} sells, "
         f"{sum(1 for a in actions if a.action_type == 'BUY')} buys, "
         f"{sum(1 for a in actions if a.action_type == 'ADD')} adds, "
         f"{sum(1 for a in actions if a.action_type == 'TRIM')} trims, "
         f"{sum(1 for a in actions if a.action_type == 'KEEP')} keeps"
+    )
+
+    # --- Step 2.1: Sell quality gate — reduce aggressive liquidation ---
+    sell_quality_ctx = build_sell_quality_context(
+        analyst_output=analyst_output,
+        rotation_output=rotation_output,
+    )
+    actions = apply_sell_quality_gate(
+        actions, sell_quality_ctx, current_holdings.total_value
+    )
+    logger.info(
+        f"[Agent 08] Post-quality-gate: "
+        f"{sum(1 for a in actions if a.action_type == 'SELL')} sells, "
+        f"{sum(1 for a in actions if a.action_type == 'TRIM')} trims"
     )
 
     # --- Step 2.5: LLM rationale enrichment ---

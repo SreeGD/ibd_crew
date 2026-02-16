@@ -96,11 +96,8 @@ pip install -r requirements.txt
 ### Environment Variables (Optional)
 
 ```bash
-# For LLM-enhanced features
-export ANTHROPIC_API_KEY=sk-ant-...
-
-# Or use a .env file
-echo "ANTHROPIC_API_KEY=sk-ant-..." > .env
+cp .env.example .env
+# Edit .env and add your Anthropic API key
 ```
 
 ## Usage
@@ -255,6 +252,10 @@ ibd_crew/
 └── requirements.txt       # Pip requirements
 ```
 
+## Contributing
+
+Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for setup instructions, coding standards, and the PR process.
+
 ## License
 
-Private project. All rights reserved.
+MIT License. See [LICENSE](LICENSE) for details.

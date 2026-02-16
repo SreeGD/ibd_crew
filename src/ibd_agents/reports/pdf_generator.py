@@ -1026,6 +1026,23 @@ def _current_vs_tiers_section(
         )
     )
 
+    # --- Build lookup for quality-gate TRIMs (SELL→TRIM conversions) ---
+    # These are holdings NOT in the recommended portfolio but converted to TRIM
+    # by the sell quality gate. Place them in their analyst tier, not "Not Recommended".
+    trim_tier_lookup: dict[str, int] = {}  # symbol → analyst tier for quality-gate trims
+    for act in reconciler.actions:
+        if act.action_type == "TRIM" and act.symbol not in tier_lookup:
+            # This is a quality-gate TRIM — find its tier from analyst data
+            for rs in analyst.rated_stocks:
+                if rs.symbol == act.symbol:
+                    trim_tier_lookup[act.symbol] = rs.tier
+                    break
+            else:
+                for etf in analyst.rated_etfs:
+                    if etf.symbol == act.symbol:
+                        trim_tier_lookup[act.symbol] = etf.tier
+                        break
+
     # --- Tier alignment table ---
     # Categorize current holdings by their recommended tier
     tier_buckets: dict[str, list] = {
@@ -1035,6 +1052,9 @@ def _current_vs_tiers_section(
         tier_num = tier_lookup.get(h.symbol)
         if tier_num:
             tier_buckets[f"Tier {tier_num}"].append(h)
+        elif h.symbol in trim_tier_lookup:
+            # Quality-gate TRIM — place in analyst tier
+            tier_buckets[f"Tier {trim_tier_lookup[h.symbol]}"].append(h)
         else:
             tier_buckets["Not Recommended"].append(h)
 
@@ -1132,31 +1152,70 @@ def _current_vs_tiers_section(
         gap_style_extra = []
         row_idx = 1
 
+        # Collect rows: recommended positions + quality-gate TRIMs for this tier
+        gap_rows = []
         sorted_positions = sorted(tier_obj.positions, key=lambda p: -p.target_pct)
+        seen_symbols = set()
         for pos in sorted_positions:
             act = action_lookup.get(pos.symbol)
-            action_type = act.action_type if act else "BUY"
-            current_pct = act.current_pct if act else 0.0
-            target_pct = act.target_pct if act else pos.target_pct
-            gap = target_pct - current_pct
-            dollar = act.dollar_change if act else 0.0
-            sharpe = act.sharpe_ratio if act and act.sharpe_ratio is not None else None
-            alpha = act.alpha_pct if act and act.alpha_pct is not None else None
+            gap_rows.append({
+                "symbol": pos.symbol,
+                "company": pos.company_name[:18],
+                "action_type": act.action_type if act else "BUY",
+                "current_pct": act.current_pct if act else 0.0,
+                "target_pct": act.target_pct if act else pos.target_pct,
+                "dollar": act.dollar_change if act else 0.0,
+                "sharpe": act.sharpe_ratio if act and act.sharpe_ratio is not None else None,
+                "alpha": act.alpha_pct if act and act.alpha_pct is not None else None,
+            })
+            seen_symbols.add(pos.symbol)
+
+        # Add quality-gate TRIMs assigned to this tier (not in recommended portfolio)
+        for sym, trim_tier in trim_tier_lookup.items():
+            if trim_tier == tier_num and sym not in seen_symbols:
+                act = action_lookup.get(sym)
+                if act and act.action_type == "TRIM":
+                    # Look up company name from analyst data
+                    name = sym
+                    for rs in analyst.rated_stocks:
+                        if rs.symbol == sym:
+                            name = rs.company_name[:18] if hasattr(rs, "company_name") else sym
+                            break
+                    else:
+                        for etf in analyst.rated_etfs:
+                            if etf.symbol == sym:
+                                name = etf.etf_name[:18] if hasattr(etf, "etf_name") else sym
+                                break
+                    gap_rows.append({
+                        "symbol": sym,
+                        "company": name,
+                        "action_type": "TRIM",
+                        "current_pct": act.current_pct,
+                        "target_pct": act.target_pct,
+                        "dollar": act.dollar_change,
+                        "sharpe": act.sharpe_ratio,
+                        "alpha": act.alpha_pct,
+                    })
+
+        for row in gap_rows:
+            gap = row["target_pct"] - row["current_pct"]
+            sharpe = row["sharpe"]
+            alpha = row["alpha"]
 
             gap_data.append([
-                pos.symbol,
-                pos.company_name[:18],
-                action_type,
-                f"{current_pct:.2f}",
-                f"{target_pct:.2f}",
+                row["symbol"],
+                row["company"],
+                row["action_type"],
+                f"{row['current_pct']:.2f}",
+                f"{row['target_pct']:.2f}",
                 f"{gap:+.2f}",
-                f"${dollar:+,.0f}",
+                f"${row['dollar']:+,.0f}",
                 f"{sharpe:.2f}" if sharpe is not None else "—",
                 f"{alpha:+.1f}" if alpha is not None else "—",
             ])
 
             # Color action type
-            color = action_colors_map.get(action_type, BLACK)
+            color = action_colors_map.get(row["action_type"], BLACK)
             gap_style_extra.append(("TEXTCOLOR", (2, row_idx), (2, row_idx), color))
             # Color gap
             if gap > 0.1:
