@@ -19,7 +19,11 @@ from __future__ import annotations
 import logging
 from collections import defaultdict
 from datetime import date
-from typing import Dict, List
+from typing import Dict, List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ibd_agents.schemas.value_investor_output import ValueInvestorOutput
+    from ibd_agents.schemas.pattern_output import PortfolioPatternOutput
 
 try:
     from crewai import Agent, Task
@@ -151,6 +155,8 @@ Strategy data:
 def run_portfolio_pipeline(
     strategy_output: SectorStrategyOutput,
     analyst_output: AnalystOutput,
+    value_output: Optional["ValueInvestorOutput"] = None,
+    pattern_output: Optional["PortfolioPatternOutput"] = None,
 ) -> PortfolioOutput:
     """
     Run the deterministic portfolio construction pipeline without LLM.
@@ -158,6 +164,8 @@ def run_portfolio_pipeline(
     Args:
         strategy_output: Validated SectorStrategyOutput from Agent 04
         analyst_output: Validated AnalystOutput from Agent 02
+        value_output: Optional ValueInvestorOutput from Agent 11 (~10% carve-out)
+        pattern_output: Optional PortfolioPatternOutput from Agent 12 (~10% carve-out)
 
     Returns:
         Validated PortfolioOutput
@@ -170,28 +178,42 @@ def run_portfolio_pipeline(
     # Step 1: Place 14 keeps
     keeps_placement = place_keeps(analyst_output.rated_stocks)
     keep_positions = build_keep_positions(keeps_placement, analyst_output.rated_stocks)
+    # Tag keeps with selection_source
+    for i, kp in enumerate(keep_positions):
+        keep_positions[i] = kp.model_copy(update={"selection_source": "keep"})
     keep_symbols = {p.symbol for p in keep_positions}
     logger.info(
         f"[Agent 05] Placed {len(keep_positions)} keeps, "
         f"total {keeps_placement.keeps_pct:.1f}%"
     )
 
-    # Step 2: Fill remaining positions from rated stocks (non-keeps)
+    # Step 2: Select value/pattern picks (~10% each carve-out)
+    value_positions, pattern_positions = _build_value_pattern_positions(
+        value_output, pattern_output, analyst_output, keep_symbols,
+    )
+    vp_symbols = {p.symbol for p in value_positions + pattern_positions}
+    logger.info(
+        f"[Agent 05] Value picks: {len(value_positions)}, "
+        f"Pattern picks: {len(pattern_positions)}"
+    )
+
+    # Step 3: Fill remaining positions from rated stocks (non-keeps, non-value/pattern)
     non_keep_rated = [
         rs for rs in analyst_output.rated_stocks
-        if rs.symbol not in keep_symbols
+        if rs.symbol not in keep_symbols and rs.symbol not in vp_symbols
     ]
     # Sort by conviction descending, take enough to fill
     non_keep_rated.sort(key=lambda rs: (-rs.conviction, -rs.composite_rating))
 
-    # Step 3: Add ETF positions from theme recommendations
+    # Step 4: Add ETF positions from theme recommendations
     etf_positions = _build_etf_positions(strategy_output, tier_targets, analyst_output)
 
-    # Step 4: Build tier portfolios
+    # Step 5: Build tier portfolios
     # Target total positions: aim for ~50-60 for diversification
     # We need roughly equal stock/ETF count
-    stock_positions = keep_positions + _build_stock_positions(
-        non_keep_rated, tier_targets, keep_positions
+    pre_placed = keep_positions + value_positions + pattern_positions
+    stock_positions = pre_placed + _build_stock_positions(
+        non_keep_rated, tier_targets, pre_placed
     )
     all_positions = stock_positions + etf_positions
 
@@ -241,6 +263,7 @@ def run_portfolio_pipeline(
                             reasoning=p.reasoning,
                             volatility_adjustment=adj,
                             sizing_source="llm",
+                            selection_source=p.selection_source,
                         )
                         sizing_count += 1
                     else:
@@ -259,6 +282,7 @@ def run_portfolio_pipeline(
                             reasoning=p.reasoning,
                             volatility_adjustment=0.0,
                             sizing_source="deterministic",
+                            selection_source=p.selection_source,
                         )
             logger.info(f"LLM dynamic sizing: {sizing_count}/{len(all_positions)} positions adjusted")
         else:
@@ -279,6 +303,7 @@ def run_portfolio_pipeline(
                         reasoning=p.reasoning,
                         volatility_adjustment=0.0,
                         sizing_source="deterministic",
+                        selection_source=p.selection_source,
                     )
     except Exception as e:
         logger.warning(f"LLM dynamic sizing failed: {e}")
@@ -300,6 +325,7 @@ def run_portfolio_pipeline(
                         reasoning=p.reasoning,
                         volatility_adjustment=0.0,
                         sizing_source="deterministic",
+                        selection_source=p.selection_source,
                     )
 
     # Compute actual percentages
@@ -362,7 +388,8 @@ def run_portfolio_pipeline(
         etf_count=etf_count,
         construction_methodology=(
             "3-tier portfolio construction using IBD Momentum Framework v4.0. "
-            "14 keeps placed first, remaining positions filled from analyst top 50. "
+            "14 keeps placed first, then value picks (~10%) and pattern leaders (~10%), "
+            "remaining positions filled from analyst top 50 by conviction. "
             "ETFs from theme recommendations. All positions sized within tier limits."
         ),
         deviation_notes=[],
@@ -383,6 +410,124 @@ def run_portfolio_pipeline(
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+
+def _build_value_pattern_positions(
+    value_output: Optional["ValueInvestorOutput"],
+    pattern_output: Optional["PortfolioPatternOutput"],
+    analyst_output: AnalystOutput,
+    keep_symbols: set[str],
+    max_value_picks: int = 4,
+    max_pattern_picks: int = 4,
+) -> tuple[list[PortfolioPosition], list[PortfolioPosition]]:
+    """
+    Select value and pattern picks for portfolio inclusion.
+
+    Returns (value_positions, pattern_positions).
+    Both lists exclude keeps and deduplicate against each other.
+    """
+    # Build analyst lookup for tier/conviction/sector
+    analyst_map: dict[str, RatedStock] = {
+        rs.symbol: rs for rs in analyst_output.rated_stocks
+    }
+
+    value_positions: list[PortfolioPosition] = []
+    pattern_positions: list[PortfolioPosition] = []
+    used_symbols: set[str] = set(keep_symbols)
+
+    # --- Value picks ---
+    if value_output is not None:
+        value_map = {vs.symbol: vs for vs in value_output.value_stocks}
+        value_traps = set(value_output.value_traps)
+
+        for sym in value_output.top_value_picks:
+            if len(value_positions) >= max_value_picks:
+                break
+            if sym in used_symbols or sym in value_traps:
+                continue
+
+            vs = value_map.get(sym)
+            if vs is None or vs.value_category == "Not Value":
+                continue
+            if vs.momentum_value_alignment == "Strong Mismatch":
+                continue
+
+            rs = analyst_map.get(sym)
+            if rs is None:
+                continue
+
+            target_pct = size_position(rs.tier, "stock", rs.conviction)
+            stop = compute_trailing_stop(rs.tier)
+            max_loss = compute_max_loss(rs.tier, "stock", target_pct)
+
+            value_positions.append(PortfolioPosition(
+                symbol=rs.symbol,
+                company_name=rs.company_name,
+                sector=rs.sector,
+                cap_size=getattr(rs, "cap_size", None),
+                tier=rs.tier,
+                asset_type="stock",
+                target_pct=target_pct,
+                trailing_stop_pct=stop,
+                max_loss_pct=max_loss,
+                keep_category=None,
+                conviction=rs.conviction,
+                reasoning=(
+                    f"Value pick ({vs.value_category}): "
+                    f"score {vs.value_score:.0f}/100, rank #{vs.value_rank}"
+                ),
+                volatility_adjustment=0.0,
+                sizing_source="deterministic",
+                selection_source="value",
+            ))
+            used_symbols.add(sym)
+
+    # --- Pattern picks ---
+    if pattern_output is not None:
+        sorted_analyses = sorted(
+            pattern_output.stock_analyses,
+            key=lambda sa: sa.enhanced_score,
+            reverse=True,
+        )
+        for sa in sorted_analyses:
+            if len(pattern_positions) >= max_pattern_picks:
+                break
+            if sa.symbol in used_symbols:
+                continue
+            if sa.enhanced_score < 85:
+                break  # sorted DESC, so no more qualifying stocks
+
+            rs = analyst_map.get(sa.symbol)
+            if rs is None:
+                continue
+
+            target_pct = size_position(rs.tier, "stock", rs.conviction)
+            stop = compute_trailing_stop(rs.tier)
+            max_loss = compute_max_loss(rs.tier, "stock", target_pct)
+
+            pattern_positions.append(PortfolioPosition(
+                symbol=rs.symbol,
+                company_name=rs.company_name,
+                sector=rs.sector,
+                cap_size=getattr(rs, "cap_size", None),
+                tier=rs.tier,
+                asset_type="stock",
+                target_pct=target_pct,
+                trailing_stop_pct=stop,
+                max_loss_pct=max_loss,
+                keep_category=None,
+                conviction=rs.conviction,
+                reasoning=(
+                    f"Pattern leader ({sa.enhanced_rating_label}): "
+                    f"score {sa.enhanced_score}/150"
+                ),
+                volatility_adjustment=0.0,
+                sizing_source="deterministic",
+                selection_source="pattern",
+            ))
+            used_symbols.add(sa.symbol)
+
+    return value_positions, pattern_positions
+
 def _build_stock_positions(
     non_keep_rated: List[RatedStock],
     tier_targets: Dict[str, float],
@@ -397,8 +542,19 @@ def _build_stock_positions(
         if kp.asset_type == "stock":
             keeps_per_tier[kp.tier] += 1
 
-    # Target ~7-8 stocks per tier (including keeps)
-    target_per_tier = {1: 8, 2: 8, 3: 7}
+    # Dynamic stock targets: ensure enough positions to support tier allocation.
+    # Each stock can size up to STOCK_LIMITS[tier]. We target enough stocks
+    # to cover ~60% of each tier's allocation (ETFs fill the rest).
+    # Guarantee at least MIN_MOMENTUM_PER_TIER momentum slots beyond pre-placed
+    # positions (keeps + value + pattern picks).
+    MIN_MOMENTUM_PER_TIER = 4
+    target_per_tier: dict[int, int] = {}
+    for t in (1, 2, 3):
+        tier_key = f"T{t}"
+        tier_alloc = tier_targets.get(tier_key, 30.0)
+        stock_share = tier_alloc * 0.6
+        base = max(5, int(stock_share / STOCK_LIMITS[t]) + 1)
+        target_per_tier[t] = max(base, keeps_per_tier[t] + MIN_MOMENTUM_PER_TIER)
 
     # Fill each tier
     used_symbols = {p.symbol for p in keep_positions}
@@ -441,6 +597,7 @@ def _build_stock_positions(
             reasoning=f"Analyst top {rs.conviction}/10 conviction: {rs.catalyst}",
             volatility_adjustment=0.0,
             sizing_source="deterministic",
+            selection_source="momentum",
         ))
         used_symbols.add(rs.symbol)
 
@@ -576,6 +733,56 @@ def _build_etf_positions(
         ))
         used_etfs.add(etf_sym)
 
+    # Ensure each tier has minimum ETF coverage for allocation capacity.
+    # Check if any tier lacks enough ETF capacity to reach its target
+    # when combined with stocks.
+    etfs_per_tier: dict[int, int] = defaultdict(int)
+    for p in positions:
+        etfs_per_tier[p.tier] += 1
+
+    min_etfs_per_tier = 2
+    for tier_num in (1, 2, 3):
+        if etfs_per_tier[tier_num] >= min_etfs_per_tier:
+            continue
+        # This tier needs more ETFs — reassign from over-served tiers
+        deficit = min_etfs_per_tier - etfs_per_tier[tier_num]
+        # Find broad_etfs with matching default_tier that might have been
+        # overridden to other tiers by analyst data
+        for i, p in enumerate(positions):
+            if deficit <= 0:
+                break
+            if p.tier != tier_num:
+                # Check if this broad ETF's default tier matches the deficit tier
+                default = None
+                for sym, name, sector, dt in broad_etfs:
+                    if sym == p.symbol:
+                        default = dt
+                        break
+                if default == tier_num and etfs_per_tier[p.tier] > min_etfs_per_tier:
+                    old_tier = p.tier
+                    new_pct = size_position(tier_num, "etf", p.conviction)
+                    stop = compute_trailing_stop(tier_num)
+                    max_loss = compute_max_loss(tier_num, "etf", new_pct)
+                    positions[i] = PortfolioPosition(
+                        symbol=p.symbol,
+                        company_name=p.company_name,
+                        sector=p.sector,
+                        cap_size=p.cap_size,
+                        tier=tier_num,
+                        asset_type="etf",
+                        target_pct=new_pct,
+                        trailing_stop_pct=stop,
+                        max_loss_pct=max_loss,
+                        keep_category=p.keep_category,
+                        conviction=p.conviction,
+                        reasoning=p.reasoning,
+                        volatility_adjustment=0.0,
+                        sizing_source="deterministic",
+                    )
+                    etfs_per_tier[tier_num] += 1
+                    etfs_per_tier[old_tier] -= 1
+                    deficit -= 1
+
     return positions
 
 
@@ -628,6 +835,7 @@ def _normalize_tier(
             reasoning=p.reasoning,
             volatility_adjustment=p.volatility_adjustment,
             sizing_source=p.sizing_source,
+            selection_source=p.selection_source,
         ))
 
     return normalized

@@ -40,6 +40,32 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Priority Helpers
+# ---------------------------------------------------------------------------
+
+def _sell_priority(current_pct: float) -> str:
+    """Prioritize sells by position size — largest frees the most capital first."""
+    if current_pct >= 1.0:
+        return "HIGH"
+    if current_pct >= 0.4:
+        return "MEDIUM"
+    return "LOW"
+
+
+def _buy_priority(selection_source: str | None, conviction: int) -> str:
+    """Prioritize buys by selection source and conviction."""
+    # Keeps and strategic picks (value/pattern) are highest priority
+    if selection_source in ("keep", "value", "pattern"):
+        return "HIGH"
+    # High-conviction momentum
+    if conviction >= 9:
+        return "HIGH"
+    if conviction >= 7:
+        return "MEDIUM"
+    return "LOW"
+
+
+# ---------------------------------------------------------------------------
 # Pure Functions
 # ---------------------------------------------------------------------------
 
@@ -75,6 +101,8 @@ def diff_positions(
                 "tier": p.tier,
                 "sector": p.sector,
                 "cap_size": p.cap_size,
+                "selection_source": getattr(p, "selection_source", None),
+                "conviction": getattr(p, "conviction", 5),
             }
 
     actions: list[PositionAction] = []
@@ -106,6 +134,8 @@ def diff_positions(
             elif diff_pct > 0:
                 # Need more — ADD
                 week = {1: 2, 2: 3, 3: 4}.get(tier, 3)
+                source = rec_map[sym].get("selection_source")
+                priority = _buy_priority(source, rec_map[sym].get("conviction", 5))
                 actions.append(PositionAction(
                     symbol=sym,
                     action_type="ADD",
@@ -113,12 +143,13 @@ def diff_positions(
                     current_pct=round(current_pct, 2),
                     target_pct=round(target_pct, 2),
                     dollar_change=round(dollar_change, 2),
-                    priority="MEDIUM",
+                    priority=priority,
                     week=week,
                     rationale=f"Increase position from {current_pct:.1f}% to {target_pct:.1f}% (T{tier})",
                 ))
             else:
                 # Too much — TRIM
+                priority = "HIGH" if abs(diff_pct) > 1.0 else "MEDIUM"
                 actions.append(PositionAction(
                     symbol=sym,
                     action_type="TRIM",
@@ -126,19 +157,20 @@ def diff_positions(
                     current_pct=round(current_pct, 2),
                     target_pct=round(target_pct, 2),
                     dollar_change=round(dollar_change, 2),
-                    priority="MEDIUM",
+                    priority=priority,
                     week=1,
                     rationale=f"Reduce position from {current_pct:.1f}% to {target_pct:.1f}% (T{tier})",
                 ))
         else:
             # Not recommended — SELL
+            priority = _sell_priority(current_pct)
             actions.append(PositionAction(
                 symbol=sym,
                 action_type="SELL",
                 current_pct=round(current_pct, 2),
                 target_pct=0.0,
                 dollar_change=round(-holding.market_value, 2),
-                priority="HIGH",
+                priority=priority,
                 week=1,
                 rationale=f"Position not in recommended portfolio — liquidate {current_pct:.1f}%",
             ))
@@ -151,6 +183,8 @@ def diff_positions(
             cap = info.get("cap_size")
             dollar = target_pct / 100.0 * total_value
             week = {1: 2, 2: 3, 3: 4}.get(tier, 3)
+            source = info.get("selection_source")
+            priority = _buy_priority(source, info.get("conviction", 5))
 
             actions.append(PositionAction(
                 symbol=sym,
@@ -159,10 +193,14 @@ def diff_positions(
                 current_pct=0.0,
                 target_pct=round(target_pct, 2),
                 dollar_change=round(dollar, 2),
-                priority="MEDIUM",
+                priority=priority,
                 week=week,
                 rationale=f"New T{tier} position at {target_pct:.1f}% allocation",
             ))
+
+    # 3. Sort actions within each week: HIGH first, then by absolute dollar impact
+    _PRIORITY_ORDER = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
+    actions.sort(key=lambda a: (a.week, _PRIORITY_ORDER.get(a.priority, 1), -abs(a.dollar_change)))
 
     return actions
 

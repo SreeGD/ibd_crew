@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import time
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -68,7 +70,7 @@ def generate_rotation_narrative_llm(
 
     try:
         import anthropic
-        client = anthropic.Anthropic(timeout=60.0)
+        client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"), timeout=60.0)
 
         prompt = _ROTATION_NARRATIVE_PROMPT_TEMPLATE.format(
             verdict=rotation_context.get("verdict", "unknown"),

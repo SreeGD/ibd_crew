@@ -523,7 +523,8 @@ def run_analyst_pipeline(research_output: ResearchOutput) -> AnalystOutput:
             avg_alpha=vs_dict["avg_alpha"],
         )
 
-    # --- Step 11.5: LLM valuation enrichment ---
+    # --- Step 11.5: LLM valuation enrichment (T1 only for speed) ---
+    t1_stocks = [s for s in rated_stocks if s.tier == 1]
     try:
         stock_inputs = [
             {
@@ -535,16 +536,15 @@ def run_analyst_pipeline(research_output: ResearchOutput) -> AnalystOutput:
                 "eps_rating": s.eps_rating,
                 "tier": s.tier,
             }
-            for s in rated_stocks
+            for s in t1_stocks
         ]
-        llm_data = enrich_valuation_llm(stock_inputs)
+        llm_data = enrich_valuation_llm(stock_inputs, batch_size=10)
 
         enriched_count = 0
         for s in rated_stocks:
             if s.symbol in llm_data:
                 d = llm_data[s.symbol]
 
-                # Override estimated metrics with LLM data where available
                 if d.get("pe_ratio") is not None:
                     s.estimated_pe = d["pe_ratio"]
                     s.pe_category = classify_pe_category(d["pe_ratio"], s.sector)
@@ -558,7 +558,6 @@ def run_analyst_pipeline(research_output: ResearchOutput) -> AnalystOutput:
                 if d.get("volatility") is not None:
                     s.estimated_volatility_pct = d["volatility"]
 
-                # Store LLM-specific fields
                 s.llm_pe_ratio = d.get("pe_ratio")
                 s.llm_forward_pe = d.get("forward_pe")
                 s.llm_beta = d.get("beta")
@@ -600,7 +599,6 @@ def run_analyst_pipeline(research_output: ResearchOutput) -> AnalystOutput:
                 avg_alpha=vs_dict["avg_alpha"],
             )
 
-            # Re-enrich sector rankings with updated metrics
             sector_metrics_updated: dict[str, dict] = {}
             for s in rated_stocks:
                 sec = s.sector
@@ -623,15 +621,14 @@ def run_analyst_pipeline(research_output: ResearchOutput) -> AnalystOutput:
                 if sm.get("vol"):
                     sr.avg_volatility = round(_stats2.mean(sm["vol"]), 1)
 
-        logger.info(f"LLM enriched {enriched_count}/{len(rated_stocks)} stocks")
+        logger.info(f"LLM enriched {enriched_count}/{len(t1_stocks)} T1 stocks")
     except Exception as e:
         logger.warning(f"LLM valuation enrichment failed, using deterministic estimates: {e}")
-        # Mark all stocks as "estimated" source
         for s in rated_stocks:
             if s.valuation_source is None:
                 s.valuation_source = "estimated"
 
-    # --- Step 11.6: LLM catalyst enrichment ---
+    # --- Step 11.6: LLM catalyst enrichment (T1 only for speed) ---
     try:
         from ibd_agents.tools.catalyst_enrichment import (
             compute_catalyst_adjustment,
@@ -647,9 +644,9 @@ def run_analyst_pipeline(research_output: ResearchOutput) -> AnalystOutput:
                 "eps_rating": s.eps_rating,
                 "tier": s.tier,
             }
-            for s in rated_stocks
+            for s in t1_stocks
         ]
-        catalyst_data = enrich_catalyst_llm(catalyst_inputs)
+        catalyst_data = enrich_catalyst_llm(catalyst_inputs, batch_size=10)
 
         catalyst_count = 0
         for s in rated_stocks:
@@ -669,7 +666,7 @@ def run_analyst_pipeline(research_output: ResearchOutput) -> AnalystOutput:
             else:
                 s.catalyst_source = "template"
 
-        logger.info(f"LLM catalyst enriched {catalyst_count}/{len(rated_stocks)} stocks")
+        logger.info(f"LLM catalyst enriched {catalyst_count}/{len(t1_stocks)} T1 stocks")
     except Exception as e:
         logger.warning(f"LLM catalyst enrichment failed, using template catalysts: {e}")
         for s in rated_stocks:

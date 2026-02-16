@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import time
 from datetime import date
 from typing import Optional
 
@@ -561,7 +563,7 @@ def _generate_llm_synthesis(
     """
     try:
         import anthropic
-        client = anthropic.Anthropic(timeout=60.0)
+        client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"), timeout=60.0)
     except (ImportError, Exception) as e:
         logger.info(f"Anthropic SDK not available, using template fallback: {e}")
         return None

@@ -70,6 +70,8 @@ class PositionAction(BaseModel):
     priority: str = Field(...)
     week: int = Field(..., ge=1, le=4)
     rationale: str = Field(..., min_length=10)
+    sharpe_ratio: Optional[float] = Field(None, description="Estimated Sharpe ratio for this position")
+    alpha_pct: Optional[float] = Field(None, description="Estimated CAPM alpha %")
 
     @field_validator("symbol")
     @classmethod

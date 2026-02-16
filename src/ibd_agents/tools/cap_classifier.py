@@ -7,6 +7,7 @@ Categories: large (>$10B), mid ($2B-$10B), small (<$2B).
 from __future__ import annotations
 
 import logging
+import os
 from typing import Optional
 
 try:
@@ -218,7 +219,7 @@ def classify_caps_llm(
 
     try:
         import anthropic
-        client = anthropic.Anthropic(timeout=60.0)
+        client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"), timeout=60.0)
 
         for i in range(0, len(remaining), batch_size):
             batch = remaining[i:i + batch_size]

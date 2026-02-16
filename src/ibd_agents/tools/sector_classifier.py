@@ -6,6 +6,7 @@ Assigns IBD sectors to stocks using static mapping + optional LLM fallback.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Optional
 
 try:
@@ -204,7 +205,7 @@ def classify_sectors_llm(
 
     try:
         import anthropic
-        client = anthropic.Anthropic(timeout=60.0)
+        client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"), timeout=60.0)
 
         sectors_str = ", ".join(IBD_SECTORS)
 

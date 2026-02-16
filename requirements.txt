@@ -1,0 +1,29 @@
+# IBD Momentum Investment Framework v4.0
+# Python >= 3.12 required
+
+# Core framework
+crewai[tools]>=0.102.0
+pydantic>=2.0
+
+# Data processing
+pandas>=2.0
+openpyxl>=3.1
+xlrd>=2.0
+
+# PDF parsing & generation
+pdfplumber>=0.11
+reportlab>=4.0
+
+# LLM integration (optional — deterministic pipeline works without it)
+anthropic>=0.39.0
+python-dotenv>=1.0
+
+# Historical analysis (optional)
+chromadb>=0.4
+
+# MCP server (optional)
+mcp>=1.0
+
+# Testing
+pytest>=8.0
+pytest-asyncio>=0.23

@@ -26,7 +26,11 @@ except ImportError:
     Agent = None  # type: ignore
     Task = None  # type: ignore
 
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ibd_agents.schemas.value_investor_output import ValueInvestorOutput
+    from ibd_agents.schemas.pattern_output import PortfolioPatternOutput
 
 from ibd_agents.schemas.analyst_output import AnalystOutput
 from ibd_agents.schemas.portfolio_output import PortfolioOutput
@@ -38,6 +42,7 @@ from ibd_agents.schemas.risk_output import RiskAssessment
 from ibd_agents.tools.portfolio_reader import (
     PortfolioReaderTool,
     build_mock_current_holdings,
+    read_brokerage_pdfs,
 )
 from ibd_agents.tools.position_differ import (
     PositionDifferTool,
@@ -129,6 +134,9 @@ def run_reconciler_pipeline(
     rotation_output: Optional["RotationDetectionOutput"] = None,
     strategy_output: Optional["SectorStrategyOutput"] = None,
     risk_output: Optional["RiskAssessment"] = None,
+    portfolios_dir: Optional[str] = None,
+    value_output: Optional["ValueInvestorOutput"] = None,
+    pattern_output: Optional["PortfolioPatternOutput"] = None,
 ) -> ReconciliationOutput:
     """
     Run the deterministic reconciliation pipeline without LLM.
@@ -137,14 +145,32 @@ def run_reconciler_pipeline(
         portfolio_output: Validated PortfolioOutput from Agent 05
         analyst_output: Validated AnalystOutput from Agent 02
         returns_output: Optional ReturnsProjectionOutput from Agent 07
+        portfolios_dir: Path to brokerage PDFs. If provided and PDFs exist,
+                        parses real holdings. Otherwise uses mock data.
 
     Returns:
         Validated ReconciliationOutput
     """
     logger.info("[Agent 08] Running Reconciliation pipeline ...")
 
-    # Step 1: Build mock current holdings
-    current_holdings = build_mock_current_holdings(analyst_output.rated_stocks)
+    # Step 1: Read current holdings (real PDFs if provided, else mock)
+    current_holdings = None
+    if portfolios_dir:
+        from pathlib import Path
+        pdir = Path(portfolios_dir)
+        if pdir.exists() and list(pdir.glob("*.pdf")):
+            try:
+                current_holdings = read_brokerage_pdfs(portfolios_dir)
+                logger.info(
+                    f"[Agent 08] Real holdings from PDFs: {len(current_holdings.holdings)} positions, "
+                    f"${current_holdings.total_value:,.0f} across {current_holdings.account_count} accounts"
+                )
+            except Exception as e:
+                logger.warning(f"[Agent 08] PDF parsing failed ({e}), falling back to mock")
+
+    if current_holdings is None:
+        current_holdings = build_mock_current_holdings(analyst_output.rated_stocks)
+
     logger.info(
         f"[Agent 08] Current holdings: {len(current_holdings.holdings)} positions, "
         f"${current_holdings.total_value:,.0f}"
@@ -205,6 +231,12 @@ def run_reconciler_pipeline(
     except Exception as e:
         logger.warning(f"LLM rationale enrichment failed: {e}")
         rationale_source = "deterministic"
+
+    # --- Step 2.7: Review sells against value/pattern scores ---
+    actions = _review_sells_against_value_pattern(actions, value_output, pattern_output)
+
+    # --- Step 2.8: Enrich actions with Sharpe/Alpha from analyst data ---
+    actions = _enrich_sharpe_alpha(actions, analyst_output)
 
     # Step 3: Compute money flow
     money_flow = compute_money_flow(actions, current_holdings.total_value)
@@ -329,3 +361,125 @@ def _is_etf_symbol(symbol: str) -> bool:
         "XLP", "XLY", "XLRE", "SMH", "SOXX", "ARKK", "ARKG", "ARKW",
     }
     return symbol in etf_symbols
+
+
+def _review_sells_against_value_pattern(
+    actions: list,
+    value_output: Optional["ValueInvestorOutput"],
+    pattern_output: Optional["PortfolioPatternOutput"],
+) -> list:
+    """
+    Enrich SELL action rationales with value/pattern context.
+
+    For each SELL action, checks if the symbol has a notable value score
+    or pattern score and appends a REVIEW annotation to the rationale.
+    Does NOT change the SELL decision — annotation only.
+    """
+    if value_output is None and pattern_output is None:
+        return actions
+
+    from ibd_agents.schemas.reconciliation_output import PositionAction
+
+    # Build lookups
+    value_map: dict[str, dict] = {}
+    if value_output is not None:
+        for vs in value_output.value_stocks:
+            if vs.value_category != "Not Value":
+                value_map[vs.symbol] = {
+                    "category": vs.value_category,
+                    "score": vs.value_score,
+                    "rank": vs.value_rank,
+                }
+
+    pattern_map: dict[str, dict] = {}
+    if pattern_output is not None:
+        for sa in pattern_output.stock_analyses:
+            if sa.enhanced_score >= 85:
+                pattern_map[sa.symbol] = {
+                    "score": sa.enhanced_score,
+                    "label": sa.enhanced_rating_label,
+                }
+
+    reviewed_count = 0
+    for idx, action in enumerate(actions):
+        if action.action_type != "SELL":
+            continue
+
+        annotations: list[str] = []
+        vinfo = value_map.get(action.symbol)
+        if vinfo:
+            annotations.append(
+                f"Deep Value ({vinfo['category']}, score={vinfo['score']:.0f}, rank #{vinfo['rank']})"
+            )
+
+        pinfo = pattern_map.get(action.symbol)
+        if pinfo:
+            annotations.append(
+                f"Pattern {pinfo['label']} (score={pinfo['score']}/150)"
+            )
+
+        if annotations:
+            review_note = " | REVIEW: " + "; ".join(annotations)
+            actions[idx] = PositionAction(
+                symbol=action.symbol,
+                action_type=action.action_type,
+                cap_size=action.cap_size,
+                current_pct=action.current_pct,
+                target_pct=action.target_pct,
+                dollar_change=action.dollar_change,
+                priority=action.priority,
+                week=action.week,
+                rationale=action.rationale + review_note,
+            )
+            reviewed_count += 1
+
+    if reviewed_count > 0:
+        logger.info(
+            f"[Agent 08] Value/pattern sell review: {reviewed_count} SELL actions annotated"
+        )
+
+    return actions
+
+
+def _enrich_sharpe_alpha(
+    actions: list,
+    analyst_output: AnalystOutput,
+) -> list:
+    """
+    Enrich actions with Sharpe ratio and Alpha from analyst output.
+
+    Looks up sharpe_ratio and alpha_pct from RatedStock data for each action.
+    """
+    from ibd_agents.schemas.reconciliation_output import PositionAction
+
+    # Build lookup: symbol → (sharpe_ratio, alpha_pct)
+    metrics_map: dict[str, dict] = {}
+    for rs in analyst_output.rated_stocks:
+        metrics_map[rs.symbol] = {
+            "sharpe": rs.sharpe_ratio,
+            "alpha": rs.alpha_pct,
+        }
+
+    enriched_count = 0
+    for idx, action in enumerate(actions):
+        info = metrics_map.get(action.symbol)
+        if info and (info["sharpe"] is not None or info["alpha"] is not None):
+            actions[idx] = PositionAction(
+                symbol=action.symbol,
+                action_type=action.action_type,
+                cap_size=action.cap_size,
+                current_pct=action.current_pct,
+                target_pct=action.target_pct,
+                dollar_change=action.dollar_change,
+                priority=action.priority,
+                week=action.week,
+                rationale=action.rationale,
+                sharpe_ratio=info["sharpe"],
+                alpha_pct=info["alpha"],
+            )
+            enriched_count += 1
+
+    logger.info(
+        f"[Agent 08] Sharpe/Alpha enrichment: {enriched_count}/{len(actions)} actions enriched"
+    )
+    return actions

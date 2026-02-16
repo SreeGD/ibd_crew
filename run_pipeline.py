@@ -1,8 +1,19 @@
-"""Run the Research + Analyst Pipeline and write output to Excel."""
+"""Run the Research + Analyst Pipeline and write output to Excel.
 
+Usage:
+    python run_pipeline.py                           # full pipeline
+    python run_pipeline.py data output               # custom dirs (backward compatible)
+    python run_pipeline.py --from 5                  # resume from Agent 05
+    python run_pipeline.py --from 10 --historical    # resume from Agent 10, include historical
+    python run_pipeline.py --data mydata --output results --from 3
+"""
+
+import argparse
 import sys
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from typing import Type
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
@@ -11,6 +22,8 @@ load_dotenv()
 
 import pandas as pd
 from openpyxl.styles import Font, PatternFill
+from pydantic import BaseModel
+
 from ibd_agents.agents.research_agent import run_research_pipeline
 from ibd_agents.agents.analyst_agent import run_analyst_pipeline
 from ibd_agents.agents.rotation_detector import run_rotation_pipeline
@@ -21,6 +34,133 @@ from ibd_agents.agents.returns_projector import run_returns_projector_pipeline
 from ibd_agents.agents.portfolio_reconciler import run_reconciler_pipeline
 from ibd_agents.agents.educator_agent import run_educator_pipeline
 from ibd_agents.agents.executive_synthesizer import run_synthesizer_pipeline
+from ibd_agents.agents.value_investor_agent import run_value_investor_pipeline
+from ibd_agents.agents.pattern_agent import run_pattern_pipeline
+from ibd_agents.agents.historical_analyst import run_historical_pipeline
+
+# Schema imports for snapshot deserialization
+from ibd_agents.schemas.research_output import ResearchOutput
+from ibd_agents.schemas.analyst_output import AnalystOutput
+from ibd_agents.schemas.rotation_output import RotationDetectionOutput
+from ibd_agents.schemas.strategy_output import SectorStrategyOutput
+from ibd_agents.schemas.portfolio_output import PortfolioOutput
+from ibd_agents.schemas.risk_output import RiskAssessment
+from ibd_agents.schemas.returns_projection_output import ReturnsProjectionOutput
+from ibd_agents.schemas.reconciliation_output import ReconciliationOutput
+from ibd_agents.schemas.educator_output import EducatorOutput
+from ibd_agents.schemas.synthesis_output import SynthesisOutput
+from ibd_agents.schemas.value_investor_output import ValueInvestorOutput
+from ibd_agents.schemas.pattern_output import PortfolioPatternOutput
+from ibd_agents.schemas.historical_output import HistoricalAnalysisOutput
+
+
+# ---------------------------------------------------------------------------
+# Agent Registry — maps agent number to snapshot metadata
+# ---------------------------------------------------------------------------
+
+@dataclass
+class AgentSpec:
+    number: int
+    name: str
+    output_type: Type[BaseModel]
+    snapshot_file: str
+
+
+AGENT_REGISTRY: dict[int, AgentSpec] = {
+    1:  AgentSpec(1,  "research",    ResearchOutput,            "agent01_research.json"),
+    2:  AgentSpec(2,  "analyst",     AnalystOutput,             "agent02_analyst.json"),
+    3:  AgentSpec(3,  "rotation",    RotationDetectionOutput,   "agent03_rotation.json"),
+    4:  AgentSpec(4,  "strategy",    SectorStrategyOutput,      "agent04_strategy.json"),
+    5:  AgentSpec(5,  "portfolio",   PortfolioOutput,           "agent05_portfolio.json"),
+    6:  AgentSpec(6,  "risk",        RiskAssessment,            "agent06_risk.json"),
+    7:  AgentSpec(7,  "returns",     ReturnsProjectionOutput,   "agent07_returns.json"),
+    8:  AgentSpec(8,  "reconciler",  ReconciliationOutput,      "agent08_reconciler.json"),
+    9:  AgentSpec(9,  "educator",    EducatorOutput,            "agent09_educator.json"),
+    10: AgentSpec(10, "synthesis",   SynthesisOutput,           "agent10_synthesis.json"),
+    11: AgentSpec(11, "value",       ValueInvestorOutput,       "agent11_value.json"),
+    12: AgentSpec(12, "pattern",     PortfolioPatternOutput,    "agent12_pattern.json"),
+    13: AgentSpec(13, "historical",  HistoricalAnalysisOutput,  "agent13_historical.json"),
+}
+
+
+# ---------------------------------------------------------------------------
+# Snapshot Save / Load
+# ---------------------------------------------------------------------------
+
+def _save_snapshot(output: BaseModel, agent_num: int, snapshots_dir: Path) -> Path:
+    """Save agent output as JSON snapshot for incremental pipeline runs."""
+    spec = AGENT_REGISTRY[agent_num]
+    filepath = snapshots_dir / spec.snapshot_file
+    filepath.write_text(output.model_dump_json(indent=2), encoding="utf-8")
+    return filepath
+
+
+def _load_snapshot(agent_num: int, snapshots_dir: Path) -> BaseModel:
+    """Load agent output from JSON snapshot. Exits with error if missing."""
+    spec = AGENT_REGISTRY[agent_num]
+    filepath = snapshots_dir / spec.snapshot_file
+    if not filepath.exists():
+        print(f"\nERROR: Snapshot not found: {filepath}")
+        print(f"Agent {spec.number:02d} ({spec.name}) output is required but no snapshot exists.")
+        print(f"Run the full pipeline first, or run with --from {spec.number} or earlier.")
+        sys.exit(1)
+    json_str = filepath.read_text(encoding="utf-8")
+    output = spec.output_type.model_validate_json(json_str)
+    print(f"  [snapshot] Loaded agent {spec.number:02d} ({spec.name})")
+    return output
+
+
+# ---------------------------------------------------------------------------
+# CLI Argument Parsing
+# ---------------------------------------------------------------------------
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="IBD Momentum Investment Framework v4.0 — Multi-Agent Pipeline",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""\
+examples:
+  python run_pipeline.py                          full pipeline, default dirs
+  python run_pipeline.py mydata results           custom data/output dirs
+  python run_pipeline.py --from 5                 resume from Agent 05 (Portfolio)
+  python run_pipeline.py --from 10 --historical   resume from Agent 10, include historical
+""",
+    )
+    parser.add_argument(
+        "data_dir_pos", nargs="?", default=None,
+        help=argparse.SUPPRESS,  # hidden positional for backward compat
+    )
+    parser.add_argument(
+        "output_dir_pos", nargs="?", default=None,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--data", default="data",
+        help="Data directory (default: data)",
+    )
+    parser.add_argument(
+        "--output", default="output",
+        help="Output directory (default: output)",
+    )
+    parser.add_argument(
+        "--from", dest="start_from", type=int, default=1,
+        choices=range(1, 14), metavar="N",
+        help="Start from agent N, loading agents 1..N-1 from snapshots (1-13, default: 1)",
+    )
+    parser.add_argument(
+        "--historical", action="store_true", default=False,
+        help="Include Agent 13 (Historical Analyst). Off by default.",
+    )
+
+    args = parser.parse_args()
+
+    # Positional args override defaults (backward compat)
+    if args.data_dir_pos is not None:
+        args.data = args.data_dir_pos
+    if args.output_dir_pos is not None:
+        args.output = args.output_dir_pos
+
+    return args
 
 
 def _write_research_excel(research_output, out_path: Path) -> Path:
@@ -1455,125 +1595,590 @@ def _write_synthesizer_excel(synthesis_output, out_path: Path) -> Path:
     return filepath
 
 
-def main(data_dir: str = "data", output_dir: str = "output"):
+# ---------------------------------------------------------------------------
+# Agent 11: Value Investor Excel
+# ---------------------------------------------------------------------------
+
+_VALUE_CAT_COLORS = {
+    "Quality Value": "006400",   # dark green
+    "Deep Value": "228B22",      # forest green
+    "GARP": "FFD700",            # gold
+    "Dividend Value": "FF8C00",  # dark orange
+    "Not Value": None,           # no fill
+}
+
+_TRAP_COLORS = {
+    "High": "FF0000",     # red
+    "Moderate": "FFA500",  # orange
+    "Low": "FFFF00",       # yellow
+    "None": None,
+}
+
+
+def _write_value_investor_excel(value_output, out_path: Path) -> Path:
+    """Write Agent 11 Value Investor output to Excel."""
+    today = date.today().isoformat()
+    filepath = out_path / f"agent11_value_investor_{today}.xlsx"
+
+    # --- Sheet 1: Summary ---
+    cat_counts = {}
+    for vs in value_output.value_stocks:
+        cat_counts[vs.value_category] = cat_counts.get(vs.value_category, 0) + 1
+
+    summary_rows = [
+        {"Field": "Analysis Date", "Value": value_output.analysis_date},
+        {"Field": "Total Stocks Analyzed", "Value": len(value_output.value_stocks)},
+        {"Field": "--- Categories ---", "Value": ""},
+    ]
+    for cat in ("Quality Value", "Deep Value", "GARP", "Dividend Value", "Not Value"):
+        summary_rows.append({"Field": f"  {cat}", "Value": cat_counts.get(cat, 0)})
+    summary_rows.extend([
+        {"Field": "--- Alerts ---", "Value": ""},
+        {"Field": "Value Traps", "Value": len(value_output.value_traps)},
+        {"Field": "M-V Mismatches", "Value": len(value_output.momentum_value_mismatches)},
+        {"Field": "Top Value Picks", "Value": len(value_output.top_value_picks)},
+        {"Field": "--- Moat ---", "Value": ""},
+        {"Field": "Wide Moat", "Value": value_output.moat_analysis.wide_moat_count},
+        {"Field": "Narrow Moat", "Value": value_output.moat_analysis.narrow_moat_count},
+        {"Field": "No Moat", "Value": value_output.moat_analysis.no_moat_count},
+        {"Field": "No Data", "Value": value_output.moat_analysis.no_data_count},
+        {"Field": "--- Methodology ---", "Value": ""},
+        {"Field": "Notes", "Value": value_output.methodology_notes},
+    ])
+    df_summary = pd.DataFrame(summary_rows)
+
+    # --- Sheet 2: Value Rankings ---
+    ranking_rows = []
+    for vs in value_output.value_stocks:
+        ranking_rows.append({
+            "Rank": vs.value_rank,
+            "Symbol": vs.symbol,
+            "Company": vs.company_name,
+            "Sector": vs.sector,
+            "Tier": vs.tier,
+            "Value Score": vs.value_score,
+            "Category": vs.value_category,
+            "M* Score": vs.morningstar_score,
+            "PE Score": vs.pe_value_score,
+            "PEG Score": vs.peg_value_score,
+            "Moat Score": vs.moat_quality_score,
+            "Discount Score": vs.discount_score,
+            "PE Category": vs.pe_category,
+            "PEG Ratio": vs.peg_ratio,
+            "P/FV": vs.price_to_fair_value,
+            "Moat": vs.economic_moat,
+            "M* Rating": vs.morningstar_rating,
+            "Fair Value": vs.fair_value,
+            "Div Yield %": vs.llm_dividend_yield,
+            "Composite": vs.composite_rating,
+            "RS": vs.rs_rating,
+            "EPS": vs.eps_rating,
+            "Trap Risk": vs.value_trap_risk_level,
+            "MV Alignment": vs.momentum_value_alignment,
+            "Reasoning": vs.value_category_reasoning,
+        })
+    df_rankings = pd.DataFrame(ranking_rows)
+
+    # --- Sheet 3: Value Categories ---
+    cat_rows = []
+    for cs in value_output.value_category_summaries:
+        cat_rows.append({
+            "Category": cs.category,
+            "Count": cs.stock_count,
+            "Avg Value Score": cs.avg_value_score,
+            "Avg P/E": cs.avg_pe,
+            "Avg PEG": cs.avg_peg,
+            "Avg P/FV": cs.avg_pfv,
+            "Top Stocks": ", ".join(cs.top_stocks[:5]),
+            "Description": cs.description,
+        })
+    df_categories = pd.DataFrame(cat_rows)
+
+    # --- Sheet 4: Moat Analysis ---
+    moat = value_output.moat_analysis
+    moat_rows = [
+        {"Moat Type": "Wide", "Count": moat.wide_moat_count,
+         "Avg Value Score": moat.avg_value_score_wide,
+         "Avg P/FV": moat.avg_pfv_wide,
+         "Stocks": ", ".join(moat.wide_moat_stocks[:10])},
+        {"Moat Type": "Narrow", "Count": moat.narrow_moat_count,
+         "Avg Value Score": moat.avg_value_score_narrow,
+         "Avg P/FV": moat.avg_pfv_narrow,
+         "Stocks": ""},
+        {"Moat Type": "None", "Count": moat.no_moat_count,
+         "Avg Value Score": None, "Avg P/FV": None, "Stocks": ""},
+        {"Moat Type": "No Data", "Count": moat.no_data_count,
+         "Avg Value Score": None, "Avg P/FV": None, "Stocks": ""},
+    ]
+    df_moat = pd.DataFrame(moat_rows)
+
+    # --- Sheet 5: Value Traps ---
+    trap_rows = []
+    for vs in value_output.value_stocks:
+        if vs.is_value_trap_risk:
+            trap_rows.append({
+                "Symbol": vs.symbol,
+                "Company": vs.company_name,
+                "Sector": vs.sector,
+                "Value Score": vs.value_score,
+                "Category": vs.value_category,
+                "Trap Risk": vs.value_trap_risk_level,
+                "Signals": "; ".join(vs.value_trap_signals),
+                "RS": vs.rs_rating,
+                "EPS": vs.eps_rating,
+                "SMR": vs.smr_rating,
+                "Acc/Dis": vs.acc_dis_rating,
+            })
+    df_traps = pd.DataFrame(trap_rows) if trap_rows else pd.DataFrame(
+        columns=["Symbol", "Company", "Sector", "Value Score", "Category",
+                 "Trap Risk", "Signals", "RS", "EPS", "SMR", "Acc/Dis"]
+    )
+
+    # --- Write Excel ---
+    with pd.ExcelWriter(filepath, engine="openpyxl") as writer:
+        df_summary.to_excel(writer, sheet_name="Summary", index=False)
+        df_rankings.to_excel(writer, sheet_name="Value Rankings", index=False)
+        df_categories.to_excel(writer, sheet_name="Categories", index=False)
+        df_moat.to_excel(writer, sheet_name="Moat Analysis", index=False)
+        df_traps.to_excel(writer, sheet_name="Value Traps", index=False)
+
+        # Color-code Category column in Rankings sheet
+        ws = writer.book["Value Rankings"]
+        cat_col = 7  # Column G = Category
+        trap_col = 23  # Column W = Trap Risk
+        for row_idx in range(2, len(ranking_rows) + 2):
+            # Category color
+            cat_val = ws.cell(row=row_idx, column=cat_col).value
+            color = _VALUE_CAT_COLORS.get(cat_val)
+            if color:
+                ws.cell(row=row_idx, column=cat_col).fill = PatternFill(
+                    start_color=color, end_color=color, fill_type="solid"
+                )
+                ws.cell(row=row_idx, column=cat_col).font = Font(
+                    color="FFFFFF" if color in ("006400", "228B22") else "000000"
+                )
+            # Trap Risk color
+            trap_val = ws.cell(row=row_idx, column=trap_col).value
+            trap_color = _TRAP_COLORS.get(trap_val)
+            if trap_color:
+                ws.cell(row=row_idx, column=trap_col).fill = PatternFill(
+                    start_color=trap_color, end_color=trap_color, fill_type="solid"
+                )
+
+    return filepath
+
+
+def _write_pattern_excel(pattern_output, out_path: Path) -> Path:
+    """Write Agent 12 PatternAlpha per-stock scoring output to Excel."""
+    today = date.today().isoformat()
+    filepath = out_path / f"agent12_pattern_alpha_{today}.xlsx"
+
+    ps = pattern_output.portfolio_summary
+
+    # --- Sheet 1: Summary ---
+    summary_rows = [
+        {"Field": "Analysis Date", "Value": pattern_output.analysis_date},
+        {"Field": "Scoring Source", "Value": pattern_output.scoring_source},
+        {"Field": "", "Value": ""},
+        {"Field": "--- Portfolio Summary ---", "Value": ""},
+        {"Field": "Total Stocks Scored", "Value": ps.total_stocks_scored},
+        {"Field": "Stocks With Patterns", "Value": ps.stocks_with_patterns},
+        {"Field": "Avg Enhanced Score", "Value": f"{ps.avg_enhanced_score:.1f}/150"},
+        {"Field": "Tier 1 Candidates", "Value": ps.tier_1_candidates},
+        {"Field": "Category Kings (P4>=8)", "Value": ps.category_kings},
+        {"Field": "Inflection Alerts (P5>=6)", "Value": ps.inflection_alerts},
+        {"Field": "Disruption Risks (P2=0)", "Value": ps.disruption_risks},
+        {"Field": "", "Value": ""},
+        {"Field": "Methodology", "Value": pattern_output.methodology_notes},
+        {"Field": "Summary", "Value": pattern_output.summary},
+    ]
+    df_summary = pd.DataFrame(summary_rows)
+
+    # --- Sheet 2: Enhanced Rankings ---
+    ranking_rows = []
+    sorted_analyses = sorted(
+        pattern_output.stock_analyses,
+        key=lambda sa: sa.enhanced_score,
+        reverse=True,
+    )
+    for rank, sa in enumerate(sorted_analyses, 1):
+        pattern_total = sa.pattern_score.pattern_total if sa.pattern_score else 0
+        dominant = sa.pattern_score.dominant_pattern if sa.pattern_score else ""
+        ranking_rows.append({
+            "Rank": rank,
+            "Symbol": sa.symbol,
+            "Company": sa.company_name,
+            "Sector": sa.sector,
+            "Tier": sa.tier,
+            "Base (100)": sa.base_score.base_total,
+            "Pattern (50)": pattern_total,
+            "Enhanced (150)": sa.enhanced_score,
+            "Stars": sa.enhanced_rating,
+            "Rating": sa.enhanced_rating_label,
+            "Dominant Pattern": dominant,
+            "Source": sa.scoring_source,
+        })
+    df_rankings = pd.DataFrame(ranking_rows)
+
+    # --- Sheet 3: Pattern Details ---
+    detail_rows = []
+    for sa in sorted_analyses:
+        if sa.pattern_score is None:
+            continue
+        ps_b = sa.pattern_score
+        detail_rows.append({
+            "Symbol": sa.symbol,
+            "Company": sa.company_name,
+            "P1 Platform (12)": ps_b.p1_platform.score,
+            "P2 Cannibalize (10)": ps_b.p2_cannibalization.score,
+            "P3 Capital (10)": ps_b.p3_capital_allocation.score,
+            "P4 Category (10)": ps_b.p4_category_creation.score,
+            "P5 Inflection (8)": ps_b.p5_inflection_timing.score,
+            "Pattern Total": ps_b.pattern_total,
+            "Dominant": ps_b.dominant_pattern,
+            "P1 Justification": ps_b.p1_platform.justification,
+            "P2 Justification": ps_b.p2_cannibalization.justification,
+            "P3 Justification": ps_b.p3_capital_allocation.justification,
+            "P4 Justification": ps_b.p4_category_creation.justification,
+            "P5 Justification": ps_b.p5_inflection_timing.justification,
+            "Pattern Narrative": ps_b.pattern_narrative,
+        })
+    df_details = pd.DataFrame(detail_rows) if detail_rows else pd.DataFrame()
+
+    # --- Sheet 4: Pattern Alerts ---
+    alert_rows = []
+    for alert in pattern_output.pattern_alerts:
+        alert_rows.append({
+            "Alert Type": alert.alert_type,
+            "Symbol": alert.symbol,
+            "Pattern": alert.pattern_name,
+            "Score": alert.pattern_score,
+            "Description": alert.description,
+        })
+    df_alerts = pd.DataFrame(alert_rows) if alert_rows else pd.DataFrame()
+
+    # --- Sheet 5: Tier Assessment ---
+    tier_rows = []
+    for sa in sorted_analyses:
+        tier_rows.append({
+            "Symbol": sa.symbol,
+            "Tier": sa.tier,
+            "Enhanced": sa.enhanced_score,
+            "Stars": sa.enhanced_rating,
+            "Tier Recommendation": sa.tier_recommendation,
+            "Alerts": ", ".join(sa.pattern_alerts) if sa.pattern_alerts else "",
+        })
+    df_tiers = pd.DataFrame(tier_rows)
+
+    # Color definitions
+    _GREEN = PatternFill(start_color="00B050", end_color="00B050", fill_type="solid")
+    _LIGHT_GREEN = PatternFill(start_color="90EE90", end_color="90EE90", fill_type="solid")
+    _YELLOW = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
+    _ORANGE = PatternFill(start_color="FFA500", end_color="FFA500", fill_type="solid")
+    _RED = PatternFill(start_color="FF0000", end_color="FF0000", fill_type="solid")
+    _WHITE_FONT = Font(color="FFFFFF")
+
+    # Rating label to color mapping
+    _RATING_COLORS = {
+        "Max Conviction": _GREEN,
+        "Strong": _LIGHT_GREEN,
+        "Favorable": _YELLOW,
+        "Notable": _ORANGE,
+        "Monitor": _RED,
+        "Review": _RED,
+    }
+
+    # Alert type to color mapping
+    _ALERT_COLORS = {
+        "Category King": _GREEN,
+        "Inflection Alert": _YELLOW,
+        "Disruption Risk": _RED,
+        "Pattern Imbalance": _ORANGE,
+    }
+
+    with pd.ExcelWriter(filepath, engine="openpyxl") as writer:
+        df_summary.to_excel(writer, sheet_name="Summary", index=False)
+        df_rankings.to_excel(writer, sheet_name="Enhanced Rankings", index=False)
+        if not df_details.empty:
+            df_details.to_excel(writer, sheet_name="Pattern Details", index=False)
+        if not df_alerts.empty:
+            df_alerts.to_excel(writer, sheet_name="Pattern Alerts", index=False)
+        df_tiers.to_excel(writer, sheet_name="Tier Assessment", index=False)
+
+        # Color-code enhanced rankings by rating label (column J = 10)
+        ws_rank = writer.book["Enhanced Rankings"]
+        for row_idx in range(2, ws_rank.max_row + 1):
+            rating_cell = ws_rank.cell(row=row_idx, column=10)  # Column J = Rating
+            fill = _RATING_COLORS.get(str(rating_cell.value))
+            if fill:
+                rating_cell.fill = fill
+                if fill in (_RED,):
+                    rating_cell.font = _WHITE_FONT
+
+        # Color-code pattern alerts (column A = Alert Type)
+        if "Pattern Alerts" in writer.book.sheetnames:
+            ws_alerts = writer.book["Pattern Alerts"]
+            for row_idx in range(2, ws_alerts.max_row + 1):
+                type_cell = ws_alerts.cell(row=row_idx, column=1)
+                fill = _ALERT_COLORS.get(str(type_cell.value))
+                if fill:
+                    type_cell.fill = fill
+                    if fill in (_RED,):
+                        type_cell.font = _WHITE_FONT
+
+    return filepath
+
+
+def main(data_dir: str = "data", output_dir: str = "output",
+         start_from: int = 1, run_historical: bool = False):
     out_path = Path(output_dir)
     out_path.mkdir(exist_ok=True)
+    snapshots_dir = out_path / "snapshots"
+    snapshots_dir.mkdir(exist_ok=True)
+
+    def should_run(agent_num: int) -> bool:
+        # Agents 11/12 now run before Agent 05 in the pipeline.
+        # When resuming from Agent 05+, load 11/12 from snapshots.
+        if agent_num in (11, 12) and start_from > 4 and start_from not in (11, 12):
+            return False
+        return agent_num >= start_from
+
+    if start_from > 1:
+        print(f"\n=== Resuming from Agent {start_from:02d} — "
+              f"loading agents 1..{start_from - 1} from snapshots ===\n")
 
     # ===== PHASE 1: Research Agent =====
-    print(f"[Agent 01] Running Research pipeline against '{data_dir}' ...")
-    research_output = run_research_pipeline(data_dir)
-    print(f"[Agent 01] Done — {len(research_output.stocks)} stocks, {len(research_output.etfs)} ETFs")
-
-    research_file = _write_research_excel(research_output, out_path)
-    print(f"[Agent 01] Saved: {research_file}")
+    if should_run(1):
+        print(f"[Agent 01] Running Research pipeline against '{data_dir}' ...")
+        research_output = run_research_pipeline(data_dir)
+        print(f"[Agent 01] Done — {len(research_output.stocks)} stocks, {len(research_output.etfs)} ETFs")
+        _save_snapshot(research_output, 1, snapshots_dir)
+        research_file = _write_research_excel(research_output, out_path)
+        print(f"[Agent 01] Saved: {research_file}")
+    else:
+        research_output = _load_snapshot(1, snapshots_dir)
 
     # ===== PHASE 2: Analyst Agent =====
-    print(f"[Agent 02] Running Analyst pipeline ...")
-    analyst_output = run_analyst_pipeline(research_output)
-    print(f"[Agent 02] Done — {len(analyst_output.rated_stocks)} top stocks, "
-          f"{len(analyst_output.ibd_keeps)} IBD keeps, "
-          f"{len(analyst_output.sector_rankings)} sectors ranked")
-
-    analyst_file = _write_analyst_excel(analyst_output, out_path, research_output)
-    print(f"[Agent 02] Saved: {analyst_file}")
+    if should_run(2):
+        print(f"[Agent 02] Running Analyst pipeline ...")
+        analyst_output = run_analyst_pipeline(research_output)
+        print(f"[Agent 02] Done — {len(analyst_output.rated_stocks)} top stocks, "
+              f"{len(analyst_output.ibd_keeps)} IBD keeps, "
+              f"{len(analyst_output.sector_rankings)} sectors ranked")
+        _save_snapshot(analyst_output, 2, snapshots_dir)
+        analyst_file = _write_analyst_excel(analyst_output, out_path, research_output)
+        print(f"[Agent 02] Saved: {analyst_file}")
+    else:
+        analyst_output = _load_snapshot(2, snapshots_dir)
 
     # ===== PHASE 3: Rotation Detector =====
-    print(f"[Agent 03] Running Rotation Detection pipeline ...")
-    rotation_output = run_rotation_pipeline(analyst_output, research_output)
-    print(f"[Agent 03] Done — verdict={rotation_output.verdict.value}, "
-          f"{rotation_output.signals.signals_active}/5 signals, "
-          f"type={rotation_output.rotation_type.value}")
-
-    rotation_file = _write_rotation_excel(rotation_output, out_path)
-    print(f"[Agent 03] Saved: {rotation_file}")
+    if should_run(3):
+        print(f"[Agent 03] Running Rotation Detection pipeline ...")
+        rotation_output = run_rotation_pipeline(analyst_output, research_output)
+        print(f"[Agent 03] Done — verdict={rotation_output.verdict.value}, "
+              f"{rotation_output.signals.signals_active}/5 signals, "
+              f"type={rotation_output.rotation_type.value}")
+        _save_snapshot(rotation_output, 3, snapshots_dir)
+        rotation_file = _write_rotation_excel(rotation_output, out_path)
+        print(f"[Agent 03] Saved: {rotation_file}")
+    else:
+        rotation_output = _load_snapshot(3, snapshots_dir)
 
     # ===== PHASE 4: Sector Strategist =====
-    print(f"[Agent 04] Running Sector Strategy pipeline ...")
-    strategy_output = run_strategist_pipeline(rotation_output, analyst_output)
-    print(f"[Agent 04] Done — "
-          f"{len(strategy_output.sector_allocations.overall_allocation)} sectors allocated, "
-          f"{len(strategy_output.theme_recommendations)} themes, "
-          f"{len(strategy_output.rotation_signals)} signals")
+    if should_run(4):
+        print(f"[Agent 04] Running Sector Strategy pipeline ...")
+        strategy_output = run_strategist_pipeline(rotation_output, analyst_output)
+        print(f"[Agent 04] Done — "
+              f"{len(strategy_output.sector_allocations.overall_allocation)} sectors allocated, "
+              f"{len(strategy_output.theme_recommendations)} themes, "
+              f"{len(strategy_output.rotation_signals)} signals")
+        _save_snapshot(strategy_output, 4, snapshots_dir)
+        strategy_file = _write_strategy_excel(strategy_output, out_path)
+        print(f"[Agent 04] Saved: {strategy_file}")
+    else:
+        strategy_output = _load_snapshot(4, snapshots_dir)
 
-    strategy_file = _write_strategy_excel(strategy_output, out_path)
-    print(f"[Agent 04] Saved: {strategy_file}")
+    # ===== PHASE 4a: Value Investor (runs before portfolio for integration) =====
+    if should_run(11):
+        print(f"[Agent 11] Running Value Investor pipeline ...")
+        value_output = run_value_investor_pipeline(analyst_output)
+
+        cat_counts = {}
+        for vs in value_output.value_stocks:
+            cat_counts[vs.value_category] = cat_counts.get(vs.value_category, 0) + 1
+        cat_str = ", ".join(f"{c}: {n}" for c, n in sorted(cat_counts.items(), key=lambda x: -x[1]))
+        print(f"[Agent 11] Done — {len(value_output.value_stocks)} stocks scored, "
+              f"{len(value_output.value_traps)} value traps, "
+              f"{len(value_output.top_value_picks)} top picks")
+        print(f"[Agent 11] Categories: {cat_str}")
+        _save_snapshot(value_output, 11, snapshots_dir)
+
+        value_file = _write_value_investor_excel(value_output, out_path)
+        print(f"[Agent 11] Saved: {value_file}")
+    else:
+        value_output = _load_snapshot(11, snapshots_dir)
+
+    # ===== PHASE 4b: PatternAlpha Per-Stock Scoring (runs before portfolio) =====
+    if should_run(12):
+        print(f"[Agent 12] Running PatternAlpha per-stock scoring pipeline ...")
+        pattern_output = run_pattern_pipeline(analyst_output)
+        ps = pattern_output.portfolio_summary
+        print(f"[Agent 12] Done — {ps.total_stocks_scored} stocks scored, "
+              f"{ps.stocks_with_patterns} with patterns, "
+              f"avg enhanced={ps.avg_enhanced_score:.1f}/150, "
+              f"{len(pattern_output.pattern_alerts)} alerts, "
+              f"source={pattern_output.scoring_source}")
+        _save_snapshot(pattern_output, 12, snapshots_dir)
+
+        pattern_file = _write_pattern_excel(pattern_output, out_path)
+        print(f"[Agent 12] Saved: {pattern_file}")
+    else:
+        pattern_output = _load_snapshot(12, snapshots_dir)
 
     # ===== PHASE 5: Portfolio Manager =====
-    print(f"[Agent 05] Running Portfolio Manager pipeline ...")
-    portfolio_output = run_portfolio_pipeline(strategy_output, analyst_output)
-    print(f"[Agent 05] Done — {portfolio_output.total_positions} positions, "
-          f"{portfolio_output.stock_count} stocks, {portfolio_output.etf_count} ETFs, "
-          f"{portfolio_output.keeps_placement.total_keeps} keeps")
-
-    portfolio_file = _write_portfolio_excel(portfolio_output, out_path)
-    print(f"[Agent 05] Saved: {portfolio_file}")
+    if should_run(5):
+        print(f"[Agent 05] Running Portfolio Manager pipeline ...")
+        portfolio_output = run_portfolio_pipeline(
+            strategy_output, analyst_output,
+            value_output=value_output, pattern_output=pattern_output,
+        )
+        print(f"[Agent 05] Done — {portfolio_output.total_positions} positions, "
+              f"{portfolio_output.stock_count} stocks, {portfolio_output.etf_count} ETFs, "
+              f"{portfolio_output.keeps_placement.total_keeps} keeps")
+        _save_snapshot(portfolio_output, 5, snapshots_dir)
+        portfolio_file = _write_portfolio_excel(portfolio_output, out_path)
+        print(f"[Agent 05] Saved: {portfolio_file}")
+    else:
+        portfolio_output = _load_snapshot(5, snapshots_dir)
 
     # ===== PHASE 6: Risk Officer =====
-    print(f"[Agent 06] Running Risk Officer pipeline ...")
-    risk_output = run_risk_pipeline(portfolio_output, strategy_output)
-    print(f"[Agent 06] Done — {risk_output.overall_status}, "
-          f"Sleep Well: {risk_output.sleep_well_scores.overall_score}/10, "
-          f"{len(risk_output.vetoes)} vetoes, {len(risk_output.warnings)} warnings")
-
-    risk_file = _write_risk_excel(risk_output, out_path)
-    print(f"[Agent 06] Saved: {risk_file}")
+    if should_run(6):
+        print(f"[Agent 06] Running Risk Officer pipeline ...")
+        risk_output = run_risk_pipeline(portfolio_output, strategy_output)
+        print(f"[Agent 06] Done — {risk_output.overall_status}, "
+              f"Sleep Well: {risk_output.sleep_well_scores.overall_score}/10, "
+              f"{len(risk_output.vetoes)} vetoes, {len(risk_output.warnings)} warnings")
+        _save_snapshot(risk_output, 6, snapshots_dir)
+        risk_file = _write_risk_excel(risk_output, out_path)
+        print(f"[Agent 06] Saved: {risk_file}")
+    else:
+        risk_output = _load_snapshot(6, snapshots_dir)
 
     # ===== PHASE 7: Returns Projector =====
-    print(f"[Agent 07] Running Returns Projector pipeline ...")
-    returns_output = run_returns_projector_pipeline(
-        portfolio_output, rotation_output, risk_output, analyst_output,
-    )
-    print(f"[Agent 07] Done — Expected 12m: {returns_output.expected_return.expected_12m:.1f}%, "
-          f"Alpha vs SPY: {returns_output.alpha_analysis.net_expected_alpha_vs_spy:.1f}%, "
-          f"DD w/stops: {returns_output.risk_metrics.max_drawdown_with_stops:.1f}%")
-
-    returns_file = _write_returns_projector_excel(returns_output, out_path)
-    print(f"[Agent 07] Saved: {returns_file}")
+    if should_run(7):
+        print(f"[Agent 07] Running Returns Projector pipeline ...")
+        returns_output = run_returns_projector_pipeline(
+            portfolio_output, rotation_output, risk_output, analyst_output,
+        )
+        print(f"[Agent 07] Done — Expected 12m: {returns_output.expected_return.expected_12m:.1f}%, "
+              f"Alpha vs SPY: {returns_output.alpha_analysis.net_expected_alpha_vs_spy:.1f}%, "
+              f"DD w/stops: {returns_output.risk_metrics.max_drawdown_with_stops:.1f}%")
+        _save_snapshot(returns_output, 7, snapshots_dir)
+        returns_file = _write_returns_projector_excel(returns_output, out_path)
+        print(f"[Agent 07] Saved: {returns_file}")
+    else:
+        returns_output = _load_snapshot(7, snapshots_dir)
 
     # ===== PHASE 8: Portfolio Reconciler =====
-    print(f"[Agent 08] Running Reconciler pipeline ...")
-    reconciler_output = run_reconciler_pipeline(
-        portfolio_output, analyst_output, returns_output=returns_output,
-        rotation_output=rotation_output, strategy_output=strategy_output,
-        risk_output=risk_output,
-    )
-    print(f"[Agent 08] Done — {len(reconciler_output.actions)} actions, "
-          f"turnover: {reconciler_output.transformation_metrics.turnover_pct:.0f}%")
-
-    reconciler_file = _write_reconciler_excel(reconciler_output, out_path)
-    print(f"[Agent 08] Saved: {reconciler_file}")
+    if should_run(8):
+        print(f"[Agent 08] Running Reconciler pipeline ...")
+        reconciler_output = run_reconciler_pipeline(
+            portfolio_output, analyst_output, returns_output=returns_output,
+            rotation_output=rotation_output, strategy_output=strategy_output,
+            risk_output=risk_output,
+            portfolios_dir="data/portfolios",
+            value_output=value_output, pattern_output=pattern_output,
+        )
+        print(f"[Agent 08] Done — {len(reconciler_output.actions)} actions, "
+              f"turnover: {reconciler_output.transformation_metrics.turnover_pct:.0f}%")
+        _save_snapshot(reconciler_output, 8, snapshots_dir)
+        reconciler_file = _write_reconciler_excel(reconciler_output, out_path)
+        print(f"[Agent 08] Saved: {reconciler_file}")
+    else:
+        reconciler_output = _load_snapshot(8, snapshots_dir)
 
     # ===== PHASE 9: Educator =====
-    print(f"[Agent 09] Running Educator pipeline ...")
-    educator_output = run_educator_pipeline(
-        portfolio_output, analyst_output, rotation_output, strategy_output,
-        risk_output, reconciler_output, returns_output=returns_output,
-    )
-    print(f"[Agent 09] Done — {len(educator_output.stock_explanations)} stocks explained, "
-          f"{len(educator_output.concept_lessons)} lessons, "
-          f"{len(educator_output.glossary)} glossary entries")
-
-    educator_file = _write_educator_excel(educator_output, out_path)
-    print(f"[Agent 09] Saved: {educator_file}")
+    if should_run(9):
+        print(f"[Agent 09] Running Educator pipeline ...")
+        educator_output = run_educator_pipeline(
+            portfolio_output, analyst_output, rotation_output, strategy_output,
+            risk_output, reconciler_output, returns_output=returns_output,
+        )
+        print(f"[Agent 09] Done — {len(educator_output.stock_explanations)} stocks explained, "
+              f"{len(educator_output.concept_lessons)} lessons, "
+              f"{len(educator_output.glossary)} glossary entries")
+        _save_snapshot(educator_output, 9, snapshots_dir)
+        educator_file = _write_educator_excel(educator_output, out_path)
+        print(f"[Agent 09] Saved: {educator_file}")
+    else:
+        educator_output = _load_snapshot(9, snapshots_dir)
 
     # ===== PHASE 10: Executive Summary Synthesizer =====
-    print(f"[Agent 10] Running Executive Summary Synthesizer pipeline ...")
-    synthesis_output = run_synthesizer_pipeline(
-        research_output, analyst_output, rotation_output, strategy_output,
-        portfolio_output, risk_output, returns_output, reconciler_output,
-        educator_output,
-    )
-    print(f"[Agent 10] Done — source={synthesis_output.synthesis_source}, "
-          f"{len(synthesis_output.cross_agent_connections)} connections, "
-          f"{len(synthesis_output.contradictions)} contradictions")
+    if should_run(10):
+        print(f"[Agent 10] Running Executive Summary Synthesizer pipeline ...")
+        synthesis_output = run_synthesizer_pipeline(
+            research_output, analyst_output, rotation_output, strategy_output,
+            portfolio_output, risk_output, returns_output, reconciler_output,
+            educator_output,
+        )
+        print(f"[Agent 10] Done — source={synthesis_output.synthesis_source}, "
+              f"{len(synthesis_output.cross_agent_connections)} connections, "
+              f"{len(synthesis_output.contradictions)} contradictions")
+        _save_snapshot(synthesis_output, 10, snapshots_dir)
+        synthesis_file = _write_synthesizer_excel(synthesis_output, out_path)
+        print(f"[Agent 10] Saved: {synthesis_file}")
+    else:
+        synthesis_output = _load_snapshot(10, snapshots_dir)
 
-    synthesis_file = _write_synthesizer_excel(synthesis_output, out_path)
-    print(f"[Agent 10] Saved: {synthesis_file}")
+    # ===== PHASE 13: Historical Analyst (RAG, opt-in) =====
+    historical_output = None
+    if run_historical:
+        print(f"[Agent 13] Running Historical Analyst pipeline ...")
+        try:
+            from ibd_agents.tools.historical_store import ingest_directory
+            for ingest_dir in ["data/ibd_pdf", "data/ibd_xls", "data/ibd_history"]:
+                if Path(ingest_dir).exists():
+                    ingest_result = ingest_directory(ingest_dir)
+                    if ingest_result.get("total_stocks_added", 0) > 0:
+                        print(f"[Agent 13] Ingested {ingest_result['total_stocks_added']} "
+                              f"stocks from {ingest_dir}/")
+
+            historical_output = run_historical_pipeline(analyst_output)
+            _save_snapshot(historical_output, 13, snapshots_dir)
+            print(f"[Agent 13] Done — source={historical_output.historical_source}, "
+                  f"{len(historical_output.stock_analyses)} stocks analyzed, "
+                  f"{len(historical_output.improving_stocks)} improving, "
+                  f"{len(historical_output.deteriorating_stocks)} deteriorating, "
+                  f"{len(historical_output.historical_analogs)} analogs")
+        except Exception as e:
+            print(f"[Agent 13] Warning: Historical analysis failed: {e}")
+            print(f"[Agent 13] Install chromadb to enable historical context analysis")
+    else:
+        print(f"[Agent 13] Skipped (use --historical to enable)")
+
+    # ===== PDF Summary Report =====
+    print(f"\n[PDF] Generating summary report ...")
+    try:
+        from ibd_agents.reports.pdf_generator import generate_pdf_report
+        pdf_file = generate_pdf_report(
+            research_output, analyst_output, rotation_output, strategy_output,
+            portfolio_output, risk_output, returns_output, reconciler_output,
+            educator_output, synthesis_output, value_output, pattern_output,
+            out_path, historical_output=historical_output,
+        )
+        print(f"[PDF] Saved: {pdf_file}")
+    except Exception as e:
+        print(f"[PDF] Warning: PDF generation failed: {e}")
+        print(f"[PDF] Excel files are still available in {out_path}/")
 
     print(f"\nOutput directory: {out_path}/")
 
 
 if __name__ == "__main__":
-    data = sys.argv[1] if len(sys.argv) > 1 else "data"
-    out = sys.argv[2] if len(sys.argv) > 2 else "output"
-    main(data, out)
+    args = parse_args()
+    main(
+        data_dir=args.data,
+        output_dir=args.output,
+        start_from=args.start_from,
+        run_historical=args.historical,
+    )

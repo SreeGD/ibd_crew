@@ -335,13 +335,14 @@ class TestPipelineWithLLMEnrichment:
             summary="Test research output for LLM enrichment pipeline testing with sample data",
         )
 
-        # Mock LLM to return data for NVDA
+        # Mock LLM to return data for MU (T1 stock — Comp=99, RS=99, EPS=81)
+        # Only T1 stocks are sent to LLM enrichment for speed optimization
         llm_response = json.dumps([
-            {"symbol": "NVDA", "pe_ratio": 65.0, "forward_pe": 32.0,
+            {"symbol": "MU", "pe_ratio": 65.0, "forward_pe": 32.0,
              "beta": 1.7, "annual_return_1y": 180.0, "volatility": 52.0,
              "dividend_yield": 0.03, "market_cap_b": 3200.0,
              "valuation_grade": "Speculative", "risk_grade": "Moderate",
-             "guidance": "NVIDIA commands a premium AI valuation. Strong momentum but elevated risk."}
+             "guidance": "Micron commands a premium AI valuation. Strong momentum but elevated risk."}
         ])
 
         mock_anthropic = MagicMock()
@@ -356,17 +357,17 @@ class TestPipelineWithLLMEnrichment:
         with patch.dict("sys.modules", {"anthropic": mock_anthropic}):
             output = run_analyst_pipeline(ro)
 
-        # Find NVDA in rated stocks
-        nvda = next((s for s in output.rated_stocks if s.symbol == "NVDA"), None)
-        assert nvda is not None
-        assert nvda.valuation_source == "llm"
-        assert nvda.llm_pe_ratio == 65.0
-        assert nvda.llm_beta == 1.7
-        assert nvda.llm_guidance is not None
-        assert nvda.estimated_pe == 65.0  # Overridden by LLM
+        # Find MU in rated stocks (T1, so should be LLM-enriched)
+        mu = next((s for s in output.rated_stocks if s.symbol == "MU"), None)
+        assert mu is not None
+        assert mu.valuation_source == "llm"
+        assert mu.llm_pe_ratio == 65.0
+        assert mu.llm_beta == 1.7
+        assert mu.llm_guidance is not None
+        assert mu.estimated_pe == 65.0  # Overridden by LLM
 
-        # Stocks not in LLM response should have "estimated" source
-        non_nvda = [s for s in output.rated_stocks if s.symbol != "NVDA"]
-        for s in non_nvda:
+        # Non-T1 stocks or stocks not in LLM response should have "estimated" source
+        non_mu = [s for s in output.rated_stocks if s.symbol != "MU"]
+        for s in non_mu:
             assert s.valuation_source == "estimated"
             assert s.llm_pe_ratio is None

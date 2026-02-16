@@ -13,7 +13,9 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import statistics
+import time
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -614,12 +616,16 @@ def enrich_valuation_llm(
         return {}
 
     result: dict[str, dict] = {}
+    _t0 = time.monotonic()
 
     try:
         import anthropic
-        client = anthropic.Anthropic(timeout=60.0)
+        client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"), timeout=60.0)
 
         for i in range(0, len(stocks), batch_size):
+            if time.monotonic() - _t0 > 60:
+                logger.warning(f"LLM valuation enrichment timed out after 60s, returning {len(result)} partial results")
+                break
             batch = stocks[i:i + batch_size]
 
             # Build readable stock list for prompt

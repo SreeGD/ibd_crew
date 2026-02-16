@@ -109,6 +109,7 @@ class PortfolioPosition(BaseModel):
     reasoning: str = Field(..., min_length=10)
     volatility_adjustment: float = Field(0.0, ge=-2.0, le=2.0, description="LLM vol-based size adjustment %")
     sizing_source: Optional[str] = Field(None, description="'llm' or 'deterministic'")
+    selection_source: Optional[str] = Field(None, description="'momentum'/'value'/'pattern'/'keep'")
 
     @field_validator("symbol")
     @classmethod
@@ -127,6 +128,13 @@ class PortfolioPosition(BaseModel):
     def validate_sizing_source(cls, v: Optional[str]) -> Optional[str]:
         if v is not None and v not in ("llm", "deterministic"):
             raise ValueError(f"sizing_source must be 'llm' or 'deterministic', got '{v}'")
+        return v
+
+    @field_validator("selection_source")
+    @classmethod
+    def validate_selection_source(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in ("momentum", "value", "pattern", "keep"):
+            raise ValueError(f"selection_source must be momentum/value/pattern/keep, got '{v}'")
         return v
 
     @model_validator(mode="after")
