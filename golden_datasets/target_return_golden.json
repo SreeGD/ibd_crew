@@ -1,0 +1,16 @@
+{
+  "scenario": "bull_30pct_target",
+  "expected": {
+    "position_count_range": [5, 15],
+    "t1_allocation_range": [40, 100],
+    "prob_achieve_target_range": [0.10, 0.85],
+    "achievability_rating": "REALISTIC",
+    "alternatives_count_range": [2, 3],
+    "cash_reserve_range": [5, 15],
+    "construction_rationale_min_length": 100,
+    "scenario_count": 3,
+    "sector_weights_min": 1,
+    "key_assumptions_min": 3,
+    "key_risks_min": 3
+  }
+}

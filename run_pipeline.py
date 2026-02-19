@@ -37,6 +37,7 @@ from ibd_agents.agents.executive_synthesizer import run_synthesizer_pipeline
 from ibd_agents.agents.value_investor_agent import run_value_investor_pipeline
 from ibd_agents.agents.pattern_agent import run_pattern_pipeline
 from ibd_agents.agents.historical_analyst import run_historical_pipeline
+from ibd_agents.agents.target_return_constructor import run_target_return_pipeline
 
 # Schema imports for snapshot deserialization
 from ibd_agents.schemas.research_output import ResearchOutput
@@ -52,6 +53,7 @@ from ibd_agents.schemas.synthesis_output import SynthesisOutput
 from ibd_agents.schemas.value_investor_output import ValueInvestorOutput
 from ibd_agents.schemas.pattern_output import PortfolioPatternOutput
 from ibd_agents.schemas.historical_output import HistoricalAnalysisOutput
+from ibd_agents.schemas.target_return_output import TargetReturnOutput
 
 
 # ---------------------------------------------------------------------------
@@ -80,6 +82,7 @@ AGENT_REGISTRY: dict[int, AgentSpec] = {
     11: AgentSpec(11, "value",       ValueInvestorOutput,       "agent11_value.json"),
     12: AgentSpec(12, "pattern",     PortfolioPatternOutput,    "agent12_pattern.json"),
     13: AgentSpec(13, "historical",  HistoricalAnalysisOutput,  "agent13_historical.json"),
+    14: AgentSpec(14, "target_return", TargetReturnOutput,      "agent14_target_return.json"),
 }
 
 
@@ -144,8 +147,8 @@ examples:
     )
     parser.add_argument(
         "--from", dest="start_from", type=int, default=1,
-        choices=range(1, 14), metavar="N",
-        help="Start from agent N, loading agents 1..N-1 from snapshots (1-13, default: 1)",
+        choices=range(1, 15), metavar="N",
+        help="Start from agent N, loading agents 1..N-1 from snapshots (1-14, default: 1)",
     )
     parser.add_argument(
         "--historical", action="store_true", default=False,
@@ -1929,6 +1932,155 @@ def _write_pattern_excel(pattern_output, out_path: Path) -> Path:
     return filepath
 
 
+def _write_target_return_excel(target_return_output, out_path: Path) -> Path:
+    """Write Agent 14 Target Return Constructor output to Excel."""
+    today = date.today().isoformat()
+    filepath = out_path / f"agent14_target_return_{today}.xlsx"
+
+    # --- Summary ---
+    ta = target_return_output.tier_allocation
+    pa = target_return_output.probability_assessment
+    rd = target_return_output.risk_disclosure
+    summary_rows = [
+        {"Field": "Portfolio Name", "Value": target_return_output.portfolio_name},
+        {"Field": "Target Return %", "Value": f"{target_return_output.target_return_pct:.1f}%"},
+        {"Field": "Time Horizon", "Value": f"{target_return_output.time_horizon_months} months"},
+        {"Field": "Total Capital", "Value": f"${target_return_output.total_capital:,.0f}"},
+        {"Field": "Market Regime", "Value": target_return_output.market_regime},
+        {"Field": "Achievability", "Value": rd.achievability_rating},
+        {"Field": "Prob Achieve Target", "Value": f"{pa.prob_achieve_target:.1%}"},
+        {"Field": "Expected Return", "Value": f"{pa.expected_return_pct:.1f}%"},
+        {"Field": "Median Return", "Value": f"{pa.median_return_pct:.1f}%"},
+        {"Field": "Cash Reserve", "Value": f"{target_return_output.cash_reserve_pct:.1f}%"},
+        {"Field": "Position Count", "Value": len(target_return_output.positions)},
+        {"Field": "Analysis Date", "Value": target_return_output.analysis_date},
+        {"Field": "", "Value": ""},
+        {"Field": "Summary", "Value": target_return_output.summary},
+    ]
+    df_summary = pd.DataFrame(summary_rows)
+
+    # --- Positions ---
+    pos_rows = []
+    for p in target_return_output.positions:
+        pos_rows.append({
+            "Ticker": p.ticker,
+            "Company": p.company_name,
+            "Tier": p.tier,
+            "Allocation %": f"{p.allocation_pct:.2f}%",
+            "Dollar Amount": f"${p.dollar_amount:,.0f}",
+            "Shares": p.shares,
+            "Entry Strategy": p.entry_strategy,
+            "Entry Price": f"${p.target_entry_price:.2f}",
+            "Stop Loss": f"${p.stop_loss_price:.2f}",
+            "Stop Loss %": f"{p.stop_loss_pct:.1f}%",
+            "Return Contrib %": f"{p.expected_return_contribution_pct:.2f}%",
+            "Conviction": p.conviction_level,
+            "Composite": p.composite_score,
+            "EPS": p.eps_rating,
+            "RS": p.rs_rating,
+            "Sector": p.sector,
+            "Rationale": p.selection_rationale,
+        })
+    df_positions = pd.DataFrame(pos_rows)
+
+    # --- Tier Mix ---
+    tier_rows = [
+        {"Tier": "T1 Momentum", "Allocation %": f"{ta.t1_momentum_pct:.1f}%"},
+        {"Tier": "T2 Quality Growth", "Allocation %": f"{ta.t2_quality_growth_pct:.1f}%"},
+        {"Tier": "T3 Defensive", "Allocation %": f"{ta.t3_defensive_pct:.1f}%"},
+        {"Tier": "Cash", "Allocation %": f"{target_return_output.cash_reserve_pct:.1f}%"},
+        {"Tier": "", "Allocation %": ""},
+        {"Tier": "Rationale", "Allocation %": ta.rationale},
+    ]
+    df_tiers = pd.DataFrame(tier_rows)
+
+    # --- Scenarios ---
+    scenarios = target_return_output.scenarios
+    scen_rows = []
+    for s in [scenarios.bull_scenario, scenarios.base_scenario, scenarios.bear_scenario]:
+        scen_rows.append({
+            "Scenario": s.name,
+            "Probability %": f"{s.probability_pct:.1f}%",
+            "Portfolio Return %": f"{s.portfolio_return_pct:.1f}%",
+            "S&P 500 %": f"{s.sp500_return_pct:.1f}%",
+            "NASDAQ %": f"{s.nasdaq_return_pct:.1f}%",
+            "DOW %": f"{s.dow_return_pct:.1f}%",
+            "Alpha vs S&P": f"{s.alpha_vs_sp500:.1f}%",
+            "Max Drawdown %": f"{s.max_drawdown_pct:.1f}%",
+            "Stops Triggered": s.stops_triggered,
+            "Description": s.description,
+        })
+    df_scenarios = pd.DataFrame(scen_rows)
+
+    # --- Probability Assessment ---
+    prob_rows = [
+        {"Metric": "Prob Achieve Target", "Value": f"{pa.prob_achieve_target:.1%}"},
+        {"Metric": "Prob Positive Return", "Value": f"{pa.prob_positive_return:.1%}"},
+        {"Metric": "Prob Beat S&P 500", "Value": f"{pa.prob_beat_sp500:.1%}"},
+        {"Metric": "Prob Beat NASDAQ", "Value": f"{pa.prob_beat_nasdaq:.1%}"},
+        {"Metric": "Prob Beat DOW", "Value": f"{pa.prob_beat_dow:.1%}"},
+        {"Metric": "", "Value": ""},
+        {"Metric": "Expected Return", "Value": f"{pa.expected_return_pct:.1f}%"},
+        {"Metric": "Median Return", "Value": f"{pa.median_return_pct:.1f}%"},
+        {"Metric": "P10 Return", "Value": f"{pa.p10_return_pct:.1f}%"},
+        {"Metric": "P25 Return", "Value": f"{pa.p25_return_pct:.1f}%"},
+        {"Metric": "P50 Return", "Value": f"{pa.p50_return_pct:.1f}%"},
+        {"Metric": "P75 Return", "Value": f"{pa.p75_return_pct:.1f}%"},
+        {"Metric": "P90 Return", "Value": f"{pa.p90_return_pct:.1f}%"},
+    ]
+    df_probability = pd.DataFrame(prob_rows)
+
+    # --- Alternatives ---
+    alt_rows = []
+    for a in target_return_output.alternatives:
+        alt_rows.append({
+            "Name": a.name,
+            "Target Return %": f"{a.target_return_pct:.1f}%",
+            "Prob Achieve": f"{a.prob_achieve_target:.1%}",
+            "Positions": a.position_count,
+            "T1 %": f"{a.t1_pct:.0f}%",
+            "T2 %": f"{a.t2_pct:.0f}%",
+            "T3 %": f"{a.t3_pct:.0f}%",
+            "Max Drawdown %": f"{a.max_drawdown_pct:.1f}%",
+            "Key Difference": a.key_difference,
+            "Tradeoff": a.tradeoff,
+        })
+    df_alternatives = pd.DataFrame(alt_rows)
+
+    # --- Risk Disclosure ---
+    risk_rows = [
+        {"Field": "Achievability Rating", "Value": rd.achievability_rating},
+        {"Field": "Achievability Rationale", "Value": rd.achievability_rationale},
+        {"Field": "Max Expected Drawdown", "Value": f"{rd.max_expected_drawdown_pct:.1f}%"},
+        {"Field": "Recovery Time (months)", "Value": f"{rd.recovery_time_months:.1f}"},
+        {"Field": "", "Value": ""},
+        {"Field": "Conditions for Success", "Value": " | ".join(rd.conditions_for_success)},
+        {"Field": "Conditions for Failure", "Value": " | ".join(rd.conditions_for_failure)},
+        {"Field": "", "Value": ""},
+        {"Field": "Disclaimer", "Value": rd.disclaimer},
+        {"Field": "", "Value": ""},
+        {"Field": "Construction Rationale", "Value": target_return_output.construction_rationale},
+    ]
+    df_risk = pd.DataFrame(risk_rows)
+
+    with pd.ExcelWriter(filepath, engine="openpyxl") as writer:
+        df_summary.to_excel(writer, sheet_name="Summary", index=False)
+        df_positions.to_excel(writer, sheet_name="Positions", index=False)
+        df_tiers.to_excel(writer, sheet_name="Tier Mix", index=False)
+        df_scenarios.to_excel(writer, sheet_name="Scenarios", index=False)
+        df_probability.to_excel(writer, sheet_name="Probability", index=False)
+        df_alternatives.to_excel(writer, sheet_name="Alternatives", index=False)
+        df_risk.to_excel(writer, sheet_name="Risk Disclosure", index=False)
+
+        for sheet_name in writer.sheets:
+            ws = writer.sheets[sheet_name]
+            for col in ws.columns:
+                max_len = max(len(str(cell.value or "")) for cell in col)
+                ws.column_dimensions[col[0].column_letter].width = min(max_len + 2, 60)
+
+    return filepath
+
+
 def main(data_dir: str = "data", output_dir: str = "output",
          start_from: int = 1, run_historical: bool = False):
     out_path = Path(output_dir)
@@ -1940,6 +2092,10 @@ def main(data_dir: str = "data", output_dir: str = "output",
         # Agents 11/12 now run before Agent 05 in the pipeline.
         # When resuming from Agent 05+, load 11/12 from snapshots.
         if agent_num in (11, 12) and start_from > 4 and start_from not in (11, 12):
+            return False
+        # Agent 14 runs after Agent 07. When resuming from Agent 08+,
+        # load 14 from snapshot (unless specifically targeting 14).
+        if agent_num == 14 and start_from > 7 and start_from != 14:
             return False
         return agent_num >= start_from
 
@@ -2078,6 +2234,27 @@ def main(data_dir: str = "data", output_dir: str = "output",
         print(f"[Agent 07] Saved: {returns_file}")
     else:
         returns_output = _load_snapshot(7, snapshots_dir)
+
+    # ===== PHASE 7a: Target Return Constructor =====
+    target_return_output = None
+    if should_run(14):
+        print(f"[Agent 14] Running Target Return Constructor pipeline ...")
+        target_return_output = run_target_return_pipeline(
+            analyst_output, rotation_output, strategy_output,
+            risk_output, returns_output,
+        )
+        print(f"[Agent 14] Done — {len(target_return_output.positions)} positions, "
+              f"prob={target_return_output.probability_assessment.prob_achieve_target:.0%}, "
+              f"achievability={target_return_output.risk_disclosure.achievability_rating}")
+        _save_snapshot(target_return_output, 14, snapshots_dir)
+        target_return_file = _write_target_return_excel(target_return_output, out_path)
+        print(f"[Agent 14] Saved: {target_return_file}")
+    elif start_from > 7:
+        try:
+            target_return_output = _load_snapshot(14, snapshots_dir)
+        except SystemExit:
+            print(f"  [snapshot] Agent 14 snapshot not found — skipping target return output")
+            target_return_output = None
 
     # ===== PHASE 8: Portfolio Reconciler =====
     if should_run(8):
