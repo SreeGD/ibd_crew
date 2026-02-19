@@ -195,8 +195,14 @@ def run_research_pipeline(data_dir: str = "data") -> ResearchOutput:
             try:
                 records = read_fool_pdf(str(f))
                 if records:
-                    universe.add_fool_data(records)
-                    sources_used.append(f.name)
+                    # Resolve company names to symbols via existing universe
+                    records = universe.resolve_fool_names(records)
+                    if records:
+                        universe.add_fool_data(records)
+                        sources_used.append(f.name)
+                    else:
+                        logger.info(f"No Fool names matched universe in {f.name}")
+                        sources_failed.append(f.name)
                 else:
                     sources_failed.append(f.name)
             except Exception as e:

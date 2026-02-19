@@ -275,6 +275,8 @@ NON_TICKERS: set[str] = {
     "FIRST", "EVERY", "LARGE", "SMALL", "RIGHT", "MIGHT",
     "WHILE", "SINCE", "UNDER", "ALONG", "CLOSE", "ABOVE",
     "BELOW", "TOTAL", "DAILY", "INDEX",
+    # Motley Fool service codes and action words
+    "BUY", "SELL", "HOLD", "RB", "SA", "HG", "DI",
 }
 
 
@@ -406,6 +408,67 @@ def _extract_from_text(pages: list) -> list[str]:
             if _is_likely_ticker(w):
                 tickers.add(w)
     return sorted(tickers)
+
+
+def _extract_fool_companies(pages: list) -> list[dict]:
+    """
+    Extract company names from Motley Fool tables where the Symbol column is empty.
+
+    Handles the "New Recs / Epic" format where headers include "Company" and "Action"
+    but ticker symbols are missing from the table cells.
+
+    Returns list of dicts with keys: company_name, action, rec_date
+    """
+    results: list[dict] = []
+
+    for page in pages:
+        tables = page.extract_tables()
+        for table in tables:
+            if not table or len(table) < 2:
+                continue
+
+            header = [str(h).strip() if h else "" for h in table[0]]
+            header_lower = [h.lower() for h in header]
+
+            # Identify Fool-format tables: must have "company" column
+            company_idx = None
+            action_idx = None
+            date_idx = None
+
+            for i, h in enumerate(header_lower):
+                if "company" in h or "name" in h:
+                    company_idx = i
+                elif h == "action":
+                    action_idx = i
+                elif "rec date" in h or "date" in h:
+                    date_idx = i
+
+            if company_idx is None:
+                continue
+
+            for row in table[1:]:
+                if not row or len(row) <= company_idx:
+                    continue
+
+                name = str(row[company_idx]).strip() if row[company_idx] else ""
+                if not name or len(name) < 2:
+                    continue
+
+                action = ""
+                if action_idx is not None and action_idx < len(row) and row[action_idx]:
+                    action = str(row[action_idx]).strip().upper()
+
+                rec_date = ""
+                if date_idx is not None and date_idx < len(row) and row[date_idx]:
+                    rec_date = str(row[date_idx]).strip()
+
+                results.append({
+                    "company_name": name,
+                    "action": action,
+                    "rec_date": rec_date,
+                })
+
+    return results
 
 
 # Regex for ETF Tables data lines:
@@ -572,10 +635,11 @@ def read_fool_pdf(file_path: str) -> list[dict]:
 
     list_name = _detect_list_name(path.name)
     # Determine status from filename
-    if "epic" in path.name.lower() or "ranking" in path.name.lower():
-        fool_status = "Epic Top"
-    elif "new_rec" in path.name.lower():
+    name_lower = path.name.lower()
+    if "new rec" in name_lower or "new_rec" in name_lower:
         fool_status = "New Rec"
+    elif "ranking" in name_lower or "epic" in name_lower:
+        fool_status = "Epic Top"
     else:
         fool_status = "Epic Top"
 
@@ -592,15 +656,26 @@ def read_fool_pdf(file_path: str) -> list[dict]:
                     stock["source_file"] = path.name
                     results.append(stock)
             else:
-                # Text extraction
-                tickers = _extract_from_text(pdf.pages)
-                for sym in tickers:
-                    results.append({
-                        "symbol": sym,
-                        "company_name": sym,
-                        "fool_status": fool_status,
-                        "source_file": path.name,
-                    })
+                # Fool-specific: extract company names (symbol column is empty)
+                fool_companies = _extract_fool_companies(pdf.pages)
+                if fool_companies:
+                    for rec in fool_companies:
+                        results.append({
+                            "symbol": "",  # resolved later via universe
+                            "company_name": rec["company_name"],
+                            "fool_status": fool_status,
+                            "source_file": path.name,
+                        })
+                else:
+                    # Last resort: text extraction
+                    tickers = _extract_from_text(pdf.pages)
+                    for sym in tickers:
+                        results.append({
+                            "symbol": sym,
+                            "company_name": sym,
+                            "fool_status": fool_status,
+                            "source_file": path.name,
+                        })
 
         logger.info(f"Read {len(results)} stocks from {path.name} ({list_name})")
 

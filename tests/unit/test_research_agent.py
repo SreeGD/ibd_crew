@@ -332,3 +332,89 @@ class TestCSVPipeline:
         # Symbols should not be duplicated in the output
         symbols = [s.symbol for s in output.stocks]
         assert len(symbols) == len(set(symbols))
+
+
+# ---------------------------------------------------------------------------
+# Motley Fool Name Resolution Tests
+# ---------------------------------------------------------------------------
+
+from ibd_agents.tools.validation_scorer import StockUniverse, _normalize_company
+
+
+class TestFoolNameResolution:
+    """Tests for resolving Motley Fool company names to ticker symbols."""
+
+    @pytest.mark.schema
+    def test_normalize_company(self):
+        """Common suffixes are stripped and names lowercased."""
+        assert _normalize_company("TransMedics Group Inc") == "transmedics"
+        assert _normalize_company("Monday.com Ltd") == "mondaycom"
+        assert _normalize_company("The Trade Desk") == "the trade desk"
+        assert _normalize_company("Camping World Holdings") == "camping world"
+
+    @pytest.mark.schema
+    def test_exact_name_match(self):
+        """Fool company name matches universe entry exactly after normalization."""
+        universe = StockUniverse()
+        universe.add_ibd_data([
+            {"symbol": "TMDX", "company_name": "TransMedics Group Inc",
+             "composite_rating": 90, "rs_rating": 85},
+        ])
+        records = [{"symbol": "", "company_name": "TransMedics Group",
+                     "fool_status": "New Rec", "source_file": "fool.pdf"}]
+        resolved = universe.resolve_fool_names(records)
+        assert len(resolved) == 1
+        assert resolved[0]["symbol"] == "TMDX"
+
+    @pytest.mark.schema
+    def test_substring_match(self):
+        """Fool company name matches via substring when exact match fails."""
+        universe = StockUniverse()
+        universe.add_ibd_data([
+            {"symbol": "CWH", "company_name": "Camping World Holdings Inc",
+             "composite_rating": 85, "rs_rating": 80},
+        ])
+        records = [{"symbol": "", "company_name": "Camping World",
+                     "fool_status": "New Rec", "source_file": "fool.pdf"}]
+        resolved = universe.resolve_fool_names(records)
+        assert len(resolved) == 1
+        assert resolved[0]["symbol"] == "CWH"
+
+    @pytest.mark.schema
+    def test_no_match_skipped(self):
+        """Unknown company names are skipped (not in universe)."""
+        universe = StockUniverse()
+        universe.add_ibd_data([
+            {"symbol": "AAPL", "company_name": "Apple Inc",
+             "composite_rating": 90, "rs_rating": 85},
+        ])
+        records = [{"symbol": "", "company_name": "Nonexistent Corp",
+                     "fool_status": "New Rec", "source_file": "fool.pdf"}]
+        resolved = universe.resolve_fool_names(records)
+        assert len(resolved) == 0
+
+    @pytest.mark.schema
+    def test_existing_symbol_passed_through(self):
+        """Records that already have a symbol are passed through unchanged."""
+        universe = StockUniverse()
+        records = [{"symbol": "AAPL", "company_name": "Apple Inc",
+                     "fool_status": "Epic Top", "source_file": "fool.pdf"}]
+        resolved = universe.resolve_fool_names(records)
+        assert len(resolved) == 1
+        assert resolved[0]["symbol"] == "AAPL"
+
+    @pytest.mark.schema
+    def test_fool_validation_label_applied(self):
+        """After resolution and add_fool_data, Fool validation label is present."""
+        universe = StockUniverse()
+        universe.add_ibd_data([
+            {"symbol": "INTC", "company_name": "Intel Corp",
+             "composite_rating": 80, "rs_rating": 70},
+        ])
+        records = [{"symbol": "", "company_name": "Intel",
+                     "fool_status": "New Rec", "source_file": "fool.pdf"}]
+        resolved = universe.resolve_fool_names(records)
+        universe.add_fool_data(resolved)
+
+        agg = universe._stocks["INTC"]
+        assert "Motley Fool New Rec" in agg._validation_labels

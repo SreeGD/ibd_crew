@@ -7,6 +7,8 @@ Multi-Source Validated = total score ≥ 5 from 2+ different providers.
 
 from __future__ import annotations
 
+import logging
+import re
 from typing import Optional
 
 try:
@@ -22,6 +24,30 @@ from ibd_agents.schemas.research_output import (
     compute_validation_score,
     is_ibd_keep_candidate,
 )
+
+
+# ---------------------------------------------------------------------------
+# Company name normalization for Fool PDF matching
+# ---------------------------------------------------------------------------
+
+_COMPANY_SUFFIXES = re.compile(
+    r'\b(inc|corp|corporation|ltd|limited|group|holdings|'
+    r'co|company|llc|plc|nv|se|ag|sa|lp|class\s+[a-c])\b',
+    re.IGNORECASE,
+)
+
+
+def _normalize_company(name: str) -> str:
+    """Normalize a company name for fuzzy matching.
+
+    Lowercases, strips common suffixes (Inc, Corp, Ltd, etc.),
+    removes punctuation and extra whitespace.
+    """
+    name = name.lower().strip()
+    name = _COMPANY_SUFFIXES.sub("", name)
+    name = re.sub(r"[.,'\"-]", "", name)
+    name = re.sub(r"\s+", " ", name).strip()
+    return name
 
 
 class StockAggregation:
@@ -249,6 +275,68 @@ class StockUniverse:
             agg = self._get_or_create(sym)
             agg.merge_fool(rec)
         return len(records)
+
+    def resolve_fool_names(self, records: list[dict]) -> list[dict]:
+        """Resolve Fool records that have company_name but no symbol.
+
+        Matches company names against existing universe entries (from IBD data).
+        Returns only records where a match was found (symbol populated).
+        Records that already have a symbol are passed through unchanged.
+        """
+        _logger = logging.getLogger(__name__)
+
+        # Build reverse lookup: normalized name -> symbol
+        name_to_sym: dict[str, str] = {}
+        for sym, agg in self._stocks.items():
+            if agg.company_name and agg.company_name != sym:
+                norm = _normalize_company(agg.company_name)
+                if norm:
+                    name_to_sym[norm] = sym
+
+        resolved: list[dict] = []
+        unmatched: list[str] = []
+
+        for rec in records:
+            # Already has a valid symbol — pass through
+            if rec.get("symbol", "").strip():
+                resolved.append(rec)
+                continue
+
+            name = rec.get("company_name", "").strip()
+            if not name:
+                continue
+
+            norm_name = _normalize_company(name)
+            matched_sym = None
+
+            # 1. Exact normalized match
+            if norm_name in name_to_sym:
+                matched_sym = name_to_sym[norm_name]
+            else:
+                # 2. Substring match (Fool name in universe or vice versa)
+                for uni_name, sym in name_to_sym.items():
+                    if norm_name in uni_name or uni_name in norm_name:
+                        matched_sym = sym
+                        break
+
+            if matched_sym:
+                rec = dict(rec)  # don't mutate original
+                rec["symbol"] = matched_sym
+                resolved.append(rec)
+            else:
+                unmatched.append(name)
+
+        if resolved:
+            _logger.info(
+                f"[FoolResolver] Resolved {len(resolved)}/{len(records)} "
+                f"Fool company names to tickers"
+            )
+        if unmatched:
+            _logger.debug(
+                f"[FoolResolver] Unmatched: {unmatched[:10]}"
+            )
+
+        return resolved
 
     def add_theme_data(self, records: list[dict]) -> int:
         """Add Schwab theme records. Returns count added."""
