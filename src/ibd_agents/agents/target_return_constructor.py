@@ -250,6 +250,7 @@ def run_target_return_pipeline(
     tier_counts = _allocate_position_counts(t1_pct, t2_pct, t3_pct, target_pos_count)
 
     # --- Step 7: Rank candidates and select positions per tier ---
+    stock_metrics = _build_stock_metrics(analyst_output)
     all_positions = []
     for tier in (1, 2, 3):
         count = tier_counts[tier]
@@ -261,6 +262,7 @@ def run_target_return_pipeline(
             analyst_output.rated_stocks,
             tier=tier,
             sector_momentum_map=sector_momentum_map,
+            stock_metrics=stock_metrics,
         )
 
         if not candidates:
@@ -279,10 +281,10 @@ def run_target_return_pipeline(
 
     logger.info(f"[Agent 14] Selected {len(all_positions)} positions across tiers")
 
-    # --- Step 8: Compute stop losses ---
+    # --- Step 8: Compute stop losses (prefer Agent 06 LLM recommendations) ---
     for pos in all_positions:
         tier = pos["tier"]
-        stop_pct = compute_trailing_stop(tier)
+        stop_pct = _get_stop_for_symbol(pos["ticker"], tier, risk_output)
         entry_price = pos["target_entry_price"]
         pos["stop_loss_pct"] = stop_pct
         pos["stop_loss_price"] = round(entry_price * (1 - stop_pct / 100.0), 2)
@@ -373,6 +375,39 @@ def run_target_return_pipeline(
     for pos in all_positions:
         pos["selection_rationale"] = _build_selection_rationale(pos, sector_momentum_map)
 
+    # --- Step 11.5: LLM selection rationale enrichment ---
+    selection_source = "template"
+    try:
+        from ibd_agents.tools.target_return_enrichment import enrich_selection_rationale_llm
+        pos_inputs = [
+            {
+                "ticker": p["ticker"],
+                "company_name": p["company_name"],
+                "tier": p["tier"],
+                "sector": p["sector"],
+                "composite_score": p["composite_score"],
+                "rs_rating": p["rs_rating"],
+                "eps_rating": p["eps_rating"],
+                "conviction_level": p.get("conviction_level", "MEDIUM"),
+                "allocation_pct": p["allocation_pct"],
+                "sector_momentum": sector_momentum_map.get(p["sector"], "neutral"),
+                "multi_source_count": p.get("multi_source_count", 0),
+            }
+            for p in all_positions
+        ]
+        enhanced = enrich_selection_rationale_llm(pos_inputs)
+        if enhanced:
+            for pos in all_positions:
+                if pos["ticker"] in enhanced:
+                    pos["selection_rationale"] = enhanced[pos["ticker"]]
+            selection_source = "llm"
+            logger.info(
+                f"[Agent 14] LLM selection rationale: "
+                f"{len(enhanced)}/{len(all_positions)} enriched"
+            )
+    except Exception as e:
+        logger.warning(f"[Agent 14] LLM selection rationale failed: {e}")
+
     # --- Step 12: Validate constraints ---
     validation = validate_constraints(
         all_positions, cash_pct,
@@ -388,9 +423,11 @@ def run_target_return_pipeline(
         logger.info(f"[Agent 14] Warning: {w}")
 
     # --- Step 13: Run Monte Carlo ---
+    volatility_map = _build_volatility_map(analyst_output)
     mc_positions = [
         {"tier": p["tier"], "allocation_pct": p["allocation_pct"],
-         "stop_loss_pct": p["stop_loss_pct"]}
+         "stop_loss_pct": p["stop_loss_pct"],
+         "volatility_pct": volatility_map.get(p["ticker"])}
         for p in all_positions
     ]
     mc_result = run_monte_carlo(
@@ -442,6 +479,70 @@ def run_target_return_pipeline(
         target_return_pct, regime, sector_momentum, best,
     )
 
+    # --- Step 17.5: LLM alternative reasoning enrichment ---
+    reasoning_source = "template"
+    try:
+        from ibd_agents.tools.target_return_enrichment import enrich_alternative_reasoning_llm
+        alt_inputs = [
+            {
+                "name": alt.name,
+                "target_return_pct": alt.target_return_pct,
+                "prob_achieve_target": alt.prob_achieve_target,
+                "t1_pct": alt.t1_pct,
+                "t2_pct": alt.t2_pct,
+                "t3_pct": alt.t3_pct,
+                "max_drawdown_pct": alt.max_drawdown_pct,
+            }
+            for alt in alternatives
+        ]
+        alt_context = {
+            "primary_target": target_return_pct,
+            "primary_prob": f"{best['prob_achieve']:.0%}",
+            "regime": regime,
+        }
+        enhanced_alts = enrich_alternative_reasoning_llm(alt_inputs, alt_context)
+        if enhanced_alts:
+            for idx, alt in enumerate(alternatives):
+                if alt.name in enhanced_alts:
+                    d = enhanced_alts[alt.name]
+                    alternatives[idx] = AlternativePortfolio(
+                        name=alt.name,
+                        target_return_pct=alt.target_return_pct,
+                        prob_achieve_target=alt.prob_achieve_target,
+                        position_count=alt.position_count,
+                        t1_pct=alt.t1_pct,
+                        t2_pct=alt.t2_pct,
+                        t3_pct=alt.t3_pct,
+                        max_drawdown_pct=alt.max_drawdown_pct,
+                        key_difference=d["key_difference"],
+                        tradeoff=d["tradeoff"],
+                        reasoning_source="llm",
+                    )
+            reasoning_source = "llm"
+            logger.info(
+                f"[Agent 14] LLM alternative reasoning: "
+                f"{len(enhanced_alts)}/{len(alternatives)} enriched"
+            )
+    except Exception as e:
+        logger.warning(f"[Agent 14] LLM alternative reasoning failed: {e}")
+
+    # Set reasoning_source on non-enriched alternatives
+    for idx, alt in enumerate(alternatives):
+        if alt.reasoning_source is None:
+            alternatives[idx] = AlternativePortfolio(
+                name=alt.name,
+                target_return_pct=alt.target_return_pct,
+                prob_achieve_target=alt.prob_achieve_target,
+                position_count=alt.position_count,
+                t1_pct=alt.t1_pct,
+                t2_pct=alt.t2_pct,
+                t3_pct=alt.t3_pct,
+                max_drawdown_pct=alt.max_drawdown_pct,
+                key_difference=alt.key_difference,
+                tradeoff=alt.tradeoff,
+                reasoning_source="template",
+            )
+
     # --- Step 18: Build risk disclosure ---
     dd = compute_drawdown_with_stops({1: t1_pct, 2: t2_pct, 3: t3_pct})
     risk_disclosure = RiskDisclosure(
@@ -478,6 +579,7 @@ def run_target_return_pipeline(
             sector=p["sector"],
             sector_rank=p["sector_rank"],
             multi_source_count=p["multi_source_count"],
+            selection_source=selection_source,
         )
         for p in all_positions
     ]
@@ -488,6 +590,37 @@ def run_target_return_pipeline(
         len(target_positions), mc_result["prob_achieve_target"],
         achievability, sector_momentum,
     )
+
+    # --- Step 20.5: LLM construction narrative enrichment ---
+    narrative_source = "template"
+    try:
+        from ibd_agents.tools.target_return_enrichment import enrich_construction_narrative_llm
+        top_sectors_list = [
+            sw.sector for sw in sorted(sector_weights, key=lambda x: -x.weight_pct)[:3]
+        ]
+        top_positions_list = [
+            p.ticker for p in sorted(target_positions, key=lambda x: -x.allocation_pct)[:3]
+        ]
+        narrative_context = {
+            "target_return_pct": target_return_pct,
+            "regime": regime,
+            "t1_pct": t1_pct,
+            "t2_pct": t2_pct,
+            "t3_pct": t3_pct,
+            "n_positions": len(target_positions),
+            "prob_achieve": f"{mc_result['prob_achieve_target']:.0%}",
+            "achievability": achievability,
+            "sector_momentum": sector_momentum,
+            "top_sectors": top_sectors_list,
+            "top_positions": top_positions_list,
+        }
+        narrative = enrich_construction_narrative_llm(narrative_context)
+        if narrative:
+            construction_rationale = narrative
+            narrative_source = "llm"
+            logger.info(f"[Agent 14] LLM construction narrative: {len(narrative)} chars")
+    except Exception as e:
+        logger.warning(f"[Agent 14] LLM construction narrative failed: {e}")
 
     # --- Step 21: Build summary ---
     summary = (
@@ -523,6 +656,7 @@ def run_target_return_pipeline(
         alternatives=alternatives,
         risk_disclosure=risk_disclosure,
         construction_rationale=construction_rationale,
+        narrative_source=narrative_source,
         summary=summary,
     )
 
@@ -933,3 +1067,36 @@ def _build_construction_rationale(
         f"stops limit downside risk. Two alternative portfolios are provided with different "
         f"risk/return profiles for comparison."
     )
+
+
+def _get_stop_for_symbol(
+    ticker: str, tier: int, risk_output: RiskAssessment,
+) -> float:
+    """Get stop loss % for a symbol: prefer Agent 06 LLM recommendation, fall back to tier default."""
+    if risk_output and risk_output.stop_loss_recommendations:
+        for rec in risk_output.stop_loss_recommendations:
+            if rec.symbol == ticker:
+                return rec.recommended_stop_pct
+    return compute_trailing_stop(tier)
+
+
+def _build_volatility_map(analyst_output: AnalystOutput) -> dict[str, float]:
+    """Build ticker → volatility % map from AnalystOutput. Prefers LLM data."""
+    vol_map: dict[str, float] = {}
+    for stock in analyst_output.rated_stocks:
+        vol = stock.llm_volatility or stock.estimated_volatility_pct
+        if vol is not None:
+            vol_map[stock.symbol] = vol
+    return vol_map
+
+
+def _build_stock_metrics(analyst_output: AnalystOutput) -> dict[str, dict]:
+    """Build ticker → {sharpe_ratio, estimated_volatility_pct, estimated_beta} map."""
+    metrics: dict[str, dict] = {}
+    for stock in analyst_output.rated_stocks:
+        metrics[stock.symbol] = {
+            "sharpe_ratio": stock.sharpe_ratio,
+            "estimated_volatility_pct": stock.llm_volatility or stock.estimated_volatility_pct,
+            "estimated_beta": stock.llm_beta or stock.estimated_beta,
+        }
+    return metrics

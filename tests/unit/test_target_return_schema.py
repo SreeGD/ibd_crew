@@ -521,3 +521,74 @@ class TestTransitionPlan:
         assert len(plan.positions_to_sell) == 1
         assert len(plan.positions_to_buy) == 1
         assert len(plan.positions_to_keep) == 2
+
+
+# ---------------------------------------------------------------------------
+# Source Tracking Fields Tests
+# ---------------------------------------------------------------------------
+
+class TestSourceTrackingFields:
+
+    @pytest.mark.schema
+    def test_target_position_selection_source_default_none(self, sample_position):
+        """selection_source defaults to None."""
+        assert sample_position.selection_source is None
+
+    @pytest.mark.schema
+    def test_target_position_selection_source_template(self):
+        """selection_source accepts 'template'."""
+        pos = TargetPosition(
+            ticker="NVDA", company_name="NVIDIA", tier=1,
+            allocation_pct=12.0, dollar_amount=30000.0, shares=40,
+            entry_strategy="market", target_entry_price=750.0,
+            stop_loss_price=585.0, stop_loss_pct=22.0,
+            expected_return_contribution_pct=4.2, conviction_level="HIGH",
+            selection_rationale="Template rationale test for selection source field.",
+            composite_score=98, eps_rating=99, rs_rating=81,
+            sector="CHIPS", sector_rank=1, multi_source_count=5,
+            selection_source="template",
+        )
+        assert pos.selection_source == "template"
+
+    @pytest.mark.schema
+    def test_target_position_selection_source_llm(self):
+        """selection_source accepts 'llm'."""
+        pos = TargetPosition(
+            ticker="NVDA", company_name="NVIDIA", tier=1,
+            allocation_pct=12.0, dollar_amount=30000.0, shares=40,
+            entry_strategy="market", target_entry_price=750.0,
+            stop_loss_price=585.0, stop_loss_pct=22.0,
+            expected_return_contribution_pct=4.2, conviction_level="HIGH",
+            selection_rationale="LLM rationale test for selection source field.",
+            composite_score=98, eps_rating=99, rs_rating=81,
+            sector="CHIPS", sector_rank=1, multi_source_count=5,
+            selection_source="llm",
+        )
+        assert pos.selection_source == "llm"
+
+    @pytest.mark.schema
+    def test_alternative_reasoning_source_default_none(self):
+        """reasoning_source defaults to None."""
+        alt = AlternativePortfolio(
+            name="Conservative (20% target)",
+            target_return_pct=20.0, prob_achieve_target=0.65,
+            position_count=12, t1_pct=35.0, t2_pct=40.0, t3_pct=25.0,
+            max_drawdown_pct=12.0,
+            key_difference="Lower target with more defensive allocation",
+            tradeoff="Gain probability, give up 10% return potential",
+        )
+        assert alt.reasoning_source is None
+
+    @pytest.mark.schema
+    def test_alternative_reasoning_source_llm(self):
+        """reasoning_source accepts 'llm'."""
+        alt = AlternativePortfolio(
+            name="Conservative (20% target)",
+            target_return_pct=20.0, prob_achieve_target=0.65,
+            position_count=12, t1_pct=35.0, t2_pct=40.0, t3_pct=25.0,
+            max_drawdown_pct=12.0,
+            key_difference="Lower target with more defensive allocation",
+            tradeoff="Gain probability, give up 10% return potential",
+            reasoning_source="llm",
+        )
+        assert alt.reasoning_source == "llm"

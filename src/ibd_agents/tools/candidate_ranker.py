@@ -36,11 +36,12 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 # Score weights for candidate ranking
-COMPOSITE_WEIGHT: float = 0.30
-RS_WEIGHT: float = 0.25
-CONVICTION_WEIGHT: float = 0.20
+COMPOSITE_WEIGHT: float = 0.25
+RS_WEIGHT: float = 0.20
+CONVICTION_WEIGHT: float = 0.15
 VALIDATION_WEIGHT: float = 0.10
 MOMENTUM_WEIGHT: float = 0.15
+RISK_ADJUSTED_WEIGHT: float = 0.15
 
 # Sector momentum bonuses
 SECTOR_MOMENTUM_BONUS: dict[str, float] = {
@@ -78,12 +79,14 @@ def rank_candidates(
     required_stocks: Optional[list[str]] = None,
     excluded_stocks: Optional[list[str]] = None,
     max_count: int = 20,
+    stock_metrics: Optional[dict[str, dict]] = None,
 ) -> list[dict]:
     """
     Rank stocks within a tier for target return portfolio selection.
 
-    Score = composite * 0.30 + rs * 0.25 + conviction_norm * 0.20
+    Score = composite * 0.25 + rs * 0.20 + conviction_norm * 0.15
           + validation_bonus * 0.10 + sector_momentum * 0.15
+          + risk_adjusted * 0.15
 
     Args:
         rated_stocks: All rated stocks from analyst output.
@@ -92,6 +95,7 @@ def rank_candidates(
         required_stocks: Tickers that must be included.
         excluded_stocks: Tickers to exclude.
         max_count: Maximum candidates to return.
+        stock_metrics: Optional ticker → {sharpe_ratio, estimated_volatility_pct, estimated_beta} map.
 
     Returns:
         Ranked list of candidate dicts with score, rank, and stock data.
@@ -124,12 +128,21 @@ def rank_candidates(
         momentum = sector_momentum_map.get(stock.sector, "neutral")
         momentum_bonus = SECTOR_MOMENTUM_BONUS.get(momentum, 0.0)
 
+        # Risk-adjusted score (Sharpe ratio normalized to 0-100 scale)
+        risk_adj_bonus = 0.0
+        if stock_metrics and stock.symbol in stock_metrics:
+            sharpe = stock_metrics[stock.symbol].get("sharpe_ratio")
+            if sharpe is not None:
+                # Sharpe typically -1 to 3; normalize to 0-100
+                risk_adj_bonus = max(0.0, min(100.0, (sharpe + 1.0) * 25.0))
+
         score = (
             stock.composite_rating * COMPOSITE_WEIGHT
             + stock.rs_rating * RS_WEIGHT
             + conviction_norm * CONVICTION_WEIGHT
             + validation_bonus * VALIDATION_WEIGHT
             + momentum_bonus * MOMENTUM_WEIGHT
+            + risk_adj_bonus * RISK_ADJUSTED_WEIGHT
         )
 
         candidates.append({

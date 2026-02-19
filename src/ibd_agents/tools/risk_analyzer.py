@@ -14,7 +14,10 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from typing import Dict, List
+from typing import TYPE_CHECKING, Dict, List, Optional
+
+if TYPE_CHECKING:
+    from ibd_agents.schemas.analyst_output import AnalystOutput
 
 try:
     from crewai.tools import BaseTool
@@ -416,17 +419,30 @@ def build_stress_test_report(portfolio: PortfolioOutput) -> StressTestReport:
 def compute_sleep_well_scores(
     check_results: List[RiskCheck],
     portfolio: PortfolioOutput,
+    analyst_output: Optional["AnalystOutput"] = None,
 ) -> SleepWellScores:
     """
     Compute Sleep Well scores (1-10) per tier and overall.
 
     Scoring: start at 8, deduct for issues.
+    When analyst_output is provided, incorporates per-stock conviction
+    and volatility data for more accurate scoring.
     """
     base = 8
 
     # Count issues by severity
     veto_count = sum(1 for c in check_results if c.status == "VETO")
     warning_count = sum(1 for c in check_results if c.status == "WARNING")
+
+    # Build conviction/volatility lookup from analyst data
+    conviction_map: dict[str, int] = {}
+    volatility_map: dict[str, float] = {}
+    if analyst_output:
+        for stock in analyst_output.rated_stocks:
+            conviction_map[stock.symbol] = stock.conviction
+            vol = stock.llm_volatility or stock.estimated_volatility_pct
+            if vol is not None:
+                volatility_map[stock.symbol] = vol
 
     # Per-tier scoring
     def _tier_score(tier_positions, tier_num: int) -> int:
@@ -442,6 +458,33 @@ def compute_sleep_well_scores(
         # Deduct for vetoes/warnings
         score -= veto_count * 2
         score -= warning_count
+
+        # Conviction adjustment (when analyst data available)
+        if conviction_map and tier_positions:
+            tier_convictions = [
+                conviction_map[p.symbol]
+                for p in tier_positions
+                if p.symbol in conviction_map
+            ]
+            if tier_convictions:
+                avg_conviction = sum(tier_convictions) / len(tier_convictions)
+                if avg_conviction >= 8:
+                    score += 1
+                elif avg_conviction <= 4:
+                    score -= 1
+
+        # Volatility adjustment (when analyst data available)
+        if volatility_map and tier_positions:
+            tier_vols = [
+                volatility_map[p.symbol]
+                for p in tier_positions
+                if p.symbol in volatility_map
+            ]
+            if tier_vols:
+                avg_vol = sum(tier_vols) / len(tier_vols)
+                if avg_vol > 40:
+                    score -= 1
+
         return max(1, min(10, score))
 
     t1 = _tier_score(portfolio.tier_1.positions, 1)
@@ -458,6 +501,10 @@ def compute_sleep_well_scores(
         factors.append("Adequate defensive allocation supports score")
     if len(portfolio.sector_exposure) >= 10:
         factors.append("Strong sector diversification supports score")
+    if conviction_map:
+        factors.append("Per-stock conviction data incorporated")
+    if volatility_map:
+        factors.append("Per-stock volatility data incorporated")
     if not factors:
         factors.append("Portfolio meets all framework requirements")
 

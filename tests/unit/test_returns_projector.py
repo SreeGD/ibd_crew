@@ -417,3 +417,65 @@ class TestGoldenDataset:
         assert len(output.benchmark_comparisons) == golden["benchmark_count"]
         assert len(output.caveats) >= golden["caveats_min"]
         assert output.risk_metrics.max_drawdown_with_stops <= golden["drawdown_with_stops_max"]
+
+
+class TestRiskStopWiring:
+    """Test that Agent 07 uses Agent 06 stop-loss recommendations for drawdown."""
+
+    @pytest.mark.schema
+    def test_build_custom_stops_with_recommendations(self):
+        """_build_custom_stops returns custom dict when recommendations exist."""
+        from ibd_agents.agents.returns_projector import _build_custom_stops
+
+        portfolio, _, risk, _ = _get_pipeline_outputs()
+
+        # If LLM was available, risk has recommendations; otherwise empty list
+        result = _build_custom_stops(risk, portfolio)
+
+        if risk.stop_loss_recommendations:
+            # Custom stops should be a dict with 3 tiers
+            assert result is not None
+            assert 1 in result and 2 in result and 3 in result
+            # Values should be fractions (0-1 range)
+            for t in (1, 2, 3):
+                assert 0.0 < result[t] < 1.0
+        else:
+            # No recommendations → returns None
+            assert result is None
+
+    @pytest.mark.schema
+    def test_build_custom_stops_empty_recommendations(self):
+        """_build_custom_stops returns None when no recommendations."""
+        from ibd_agents.agents.returns_projector import _build_custom_stops
+        from unittest.mock import MagicMock
+
+        portfolio, _, risk, _ = _get_pipeline_outputs()
+
+        # Force empty recommendations
+        mock_risk = MagicMock()
+        mock_risk.stop_loss_recommendations = []
+
+        result = _build_custom_stops(mock_risk, portfolio)
+        assert result is None
+
+    @pytest.mark.schema
+    def test_drawdown_with_default_stops_matches_expected(self):
+        """Without LLM stops, drawdown calculation uses defaults."""
+        from ibd_agents.schemas.returns_projection_output import MAX_PORTFOLIO_LOSS_WITH_STOPS
+
+        tier_pcts = {1: 39.0, 2: 37.0, 3: 22.0}
+        dd = compute_drawdown_with_stops(tier_pcts)
+        assert abs(dd - MAX_PORTFOLIO_LOSS_WITH_STOPS) < 0.01
+
+    @pytest.mark.schema
+    def test_drawdown_with_custom_stops_differs(self):
+        """Custom stops produce different drawdown than defaults."""
+        tier_pcts = {1: 39.0, 2: 37.0, 3: 22.0}
+        dd_default = compute_drawdown_with_stops(tier_pcts)
+
+        # Custom: tighter stops across all tiers
+        custom_stops = {1: 0.15, 2: 0.12, 3: 0.08}
+        dd_custom = compute_drawdown_with_stops(tier_pcts, stop_losses=custom_stops)
+
+        # Tighter stops should result in lower drawdown
+        assert dd_custom < dd_default

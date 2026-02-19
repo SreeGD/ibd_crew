@@ -314,3 +314,44 @@ class TestStopLossPipeline:
         portfolio, strategy, _, _, _ = pipeline_outputs
         output = run_risk_pipeline(portfolio, strategy)
         assert isinstance(output.stop_loss_recommendations, list)
+
+
+class TestSleepWellConviction:
+    """Test Sleep Well scores with analyst conviction/volatility data."""
+
+    @pytest.fixture
+    def pipeline_outputs(self):
+        return _get_pipeline_outputs()
+
+    @pytest.mark.schema
+    def test_sleep_well_without_analyst_unchanged(self, pipeline_outputs):
+        """Without analyst_output, sleep well scores unchanged from before."""
+        portfolio, strategy, _, _, _ = pipeline_outputs
+        output_without = run_risk_pipeline(portfolio, strategy)
+        output_with_none = run_risk_pipeline(portfolio, strategy, analyst_output=None)
+        assert output_without.sleep_well_scores.overall_score == output_with_none.sleep_well_scores.overall_score
+
+    @pytest.mark.schema
+    def test_sleep_well_with_analyst_output(self, pipeline_outputs):
+        """With analyst_output, sleep well scores still in valid range."""
+        portfolio, strategy, analyst, _, _ = pipeline_outputs
+        output = run_risk_pipeline(portfolio, strategy, analyst_output=analyst)
+        for score in [
+            output.sleep_well_scores.tier_1_score,
+            output.sleep_well_scores.tier_2_score,
+            output.sleep_well_scores.tier_3_score,
+            output.sleep_well_scores.overall_score,
+        ]:
+            assert 1 <= score <= 10
+
+    @pytest.mark.schema
+    def test_sleep_well_factors_include_data_note(self, pipeline_outputs):
+        """When analyst_output provided, factors mention data incorporation."""
+        portfolio, strategy, analyst, _, _ = pipeline_outputs
+        output = run_risk_pipeline(portfolio, strategy, analyst_output=analyst)
+        factors = output.sleep_well_scores.factors
+        has_data_factor = any(
+            "conviction" in f.lower() or "volatility" in f.lower()
+            for f in factors
+        )
+        assert has_data_factor, f"Expected conviction/volatility factor in: {factors}"

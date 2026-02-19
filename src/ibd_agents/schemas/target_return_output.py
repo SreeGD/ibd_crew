@@ -148,6 +148,9 @@ class TargetPosition(BaseModel):
     sector_rank: int = Field(..., ge=1)
     multi_source_count: int = Field(..., ge=0)
 
+    # LLM enrichment tracking
+    selection_source: Optional[Literal["llm", "template"]] = None
+
     @field_validator("entry_strategy")
     @classmethod
     def valid_entry_strategy(cls, v: str) -> str:
@@ -286,6 +289,9 @@ class AlternativePortfolio(BaseModel):
         description="What you gain and what you give up vs primary",
     )
 
+    # LLM enrichment tracking
+    reasoning_source: Optional[Literal["llm", "template"]] = None
+
 
 class TransitionAction(BaseModel):
     """A single transition action (sell/buy/resize)."""
@@ -393,6 +399,9 @@ class TargetReturnOutput(BaseModel):
         ..., min_length=100,
         description="Narrative explaining WHY this specific construction",
     )
+
+    # LLM enrichment tracking
+    narrative_source: Optional[Literal["llm", "template"]] = None
 
     # Summary
     summary: str = Field(..., min_length=50)

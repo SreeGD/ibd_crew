@@ -38,6 +38,7 @@ from ibd_agents.schemas.risk_output import RiskAssessment
 from ibd_agents.schemas.rotation_output import RotationDetectionOutput
 from ibd_agents.schemas.strategy_output import SectorStrategyOutput
 from ibd_agents.schemas.synthesis_output import SynthesisOutput
+from ibd_agents.schemas.target_return_output import TargetReturnOutput
 from ibd_agents.schemas.value_investor_output import ValueInvestorOutput
 
 try:
@@ -925,6 +926,240 @@ def _returns_section(returns: ReturnsProjectionOutput, s) -> List[Any]:
     return elements
 
 
+def _target_return_section(
+    target_return: TargetReturnOutput, s
+) -> List[Any]:
+    """Target return portfolio from Agent 14."""
+    elements = []
+    elements.append(Paragraph("Target Return Portfolio", s["H1"]))
+
+    # Header summary
+    pa = target_return.probability_assessment
+    rd = target_return.risk_disclosure
+    achieve_color = {
+        "REALISTIC": GREEN, "STRETCH": ORANGE,
+        "AGGRESSIVE": RED, "IMPROBABLE": RED,
+    }.get(rd.achievability_rating, BLACK)
+    achieve_hex = achieve_color.hexval() if hasattr(achieve_color, "hexval") else "#000000"
+    elements.append(
+        Paragraph(
+            f"<b>Target:</b> {target_return.target_return_pct:.0f}% in "
+            f"{target_return.time_horizon_months}m &nbsp; | &nbsp; "
+            f"<b>Regime:</b> {target_return.market_regime.upper()} &nbsp; | &nbsp; "
+            f'<b>Achievability:</b> <font color="{achieve_hex}">'
+            f"{rd.achievability_rating}</font> &nbsp; | &nbsp; "
+            f"<b>Prob:</b> {pa.prob_achieve_target:.0%} &nbsp; | &nbsp; "
+            f"<b>Positions:</b> {len(target_return.positions)}",
+            s["Body"],
+        )
+    )
+
+    # Tier allocation
+    ta = target_return.tier_allocation
+    elements.append(Paragraph("Tier Allocation", s["H2"]))
+    tier_data = [
+        ["Tier", "Allocation %"],
+        ["T1 Momentum", f"{ta.t1_momentum_pct:.1f}%"],
+        ["T2 Quality Growth", f"{ta.t2_quality_growth_pct:.1f}%"],
+        ["T3 Defensive", f"{ta.t3_defensive_pct:.1f}%"],
+        ["Cash Reserve", f"{target_return.cash_reserve_pct:.1f}%"],
+    ]
+    elements.append(_make_table(tier_data, [3.25 * inch, 3.25 * inch]))
+    elements.append(Paragraph(ta.rationale, s["Reasoning"]))
+
+    # Positions table
+    elements.append(Paragraph("Selected Positions", s["H2"]))
+    sorted_pos = sorted(target_return.positions, key=lambda p: -p.allocation_pct)
+    pos_data = [
+        ["Ticker", "Company", "Tier", "Alloc%", "Entry$", "Stop$",
+         "Stop%", "Contrib%", "Conv", "Comp", "RS"],
+    ]
+    pos_style_extra = []
+    for i, p in enumerate(sorted_pos, 1):
+        pos_data.append([
+            p.ticker,
+            p.company_name[:20],
+            f"T{p.tier}",
+            f"{p.allocation_pct:.1f}",
+            f"${p.target_entry_price:.2f}",
+            f"${p.stop_loss_price:.2f}",
+            f"{p.stop_loss_pct:.0f}",
+            f"{p.expected_return_contribution_pct:.1f}",
+            p.conviction_level[:3],
+            f"{p.composite_score:.0f}",
+            str(p.rs_rating),
+        ])
+        # Color tier
+        tier_color = TIER_COLORS.get(p.tier, BLACK)
+        pos_style_extra.append(("TEXTCOLOR", (2, i), (2, i), tier_color))
+        # Color conviction
+        conv_color = GREEN if p.conviction_level == "HIGH" else ORANGE
+        pos_style_extra.append(("TEXTCOLOR", (8, i), (8, i), conv_color))
+    pos_style_extra.append(("ALIGN", (3, 0), (10, -1), "RIGHT"))
+    elements.append(
+        _make_table(
+            pos_data,
+            [0.55 * inch, 1.3 * inch, 0.4 * inch, 0.55 * inch, 0.65 * inch,
+             0.65 * inch, 0.5 * inch, 0.6 * inch, 0.45 * inch, 0.45 * inch, 0.4 * inch],
+            pos_style_extra,
+        )
+    )
+
+    # Selection rationale per position
+    elements.append(Spacer(1, 0.15 * inch))
+    elements.append(Paragraph("<b>Selection Rationale:</b>", s["Small"]))
+    rat_data = [[
+        Paragraph("<b>Ticker</b>", s["CellBold"]),
+        Paragraph("<b>Rationale</b>", s["CellBold"]),
+    ]]
+    for p in sorted_pos:
+        src_label = f' [{p.selection_source}]' if p.selection_source else ""
+        rat_data.append([
+            Paragraph(f"<b>{p.ticker}</b>", s["CellWrap"]),
+            Paragraph(f"{p.selection_rationale}{src_label}", s["CellWrap"]),
+        ])
+    rat_widths = [0.8 * inch, 5.7 * inch]
+    rat_style = list(HEADER_STYLE) + _zebra_rows(len(rat_data))
+    rat_style.append(("VALIGN", (0, 0), (-1, -1), "TOP"))
+    rat_tbl = Table(rat_data, colWidths=rat_widths, repeatRows=1)
+    rat_tbl.setStyle(TableStyle(rat_style))
+    elements.append(rat_tbl)
+
+    elements.append(PageBreak())
+
+    # Probability assessment
+    elements.append(Paragraph("Probability Assessment", s["H1"]))
+    prob_data = [
+        ["Metric", "Value"],
+        ["Prob Achieve Target", f"{pa.prob_achieve_target:.0%}"],
+        ["Prob Positive Return", f"{pa.prob_positive_return:.0%}"],
+        ["Prob Beat S&amp;P 500", f"{pa.prob_beat_sp500:.0%}"],
+        ["Prob Beat Nasdaq", f"{pa.prob_beat_nasdaq:.0%}"],
+        ["Prob Beat Dow", f"{pa.prob_beat_dow:.0%}"],
+        ["Expected Return", f"{pa.expected_return_pct:.1f}%"],
+        ["Median Return", f"{pa.median_return_pct:.1f}%"],
+    ]
+    elements.append(_make_table(prob_data, [3.25 * inch, 3.25 * inch]))
+
+    # Percentile ranges
+    elements.append(Paragraph("Return Distribution (Percentiles)", s["H2"]))
+    pct_data = [
+        ["Percentile", "Return %"],
+        ["P10 (Downside)", f"{pa.p10_return_pct:.1f}%"],
+        ["P25", f"{pa.p25_return_pct:.1f}%"],
+        ["P50 (Median)", f"{pa.p50_return_pct:.1f}%"],
+        ["P75", f"{pa.p75_return_pct:.1f}%"],
+        ["P90 (Upside)", f"{pa.p90_return_pct:.1f}%"],
+    ]
+    pct_style = [
+        ("TEXTCOLOR", (1, 1), (1, 1), RED),
+        ("TEXTCOLOR", (1, 5), (1, 5), GREEN),
+    ]
+    elements.append(_make_table(pct_data, [3.25 * inch, 3.25 * inch], pct_style))
+
+    # Scenario analysis
+    elements.append(Paragraph("Scenario Analysis", s["H2"]))
+    scenarios = target_return.scenarios
+    sc_data = [
+        ["", "Bull", "Base", "Bear"],
+        ["Probability",
+         f"{scenarios.bull_scenario.probability_pct:.0f}%",
+         f"{scenarios.base_scenario.probability_pct:.0f}%",
+         f"{scenarios.bear_scenario.probability_pct:.0f}%"],
+        ["Portfolio Return",
+         f"{scenarios.bull_scenario.portfolio_return_pct:.1f}%",
+         f"{scenarios.base_scenario.portfolio_return_pct:.1f}%",
+         f"{scenarios.bear_scenario.portfolio_return_pct:.1f}%"],
+        ["Alpha vs S&amp;P 500",
+         f"{scenarios.bull_scenario.alpha_vs_sp500:+.1f}%",
+         f"{scenarios.base_scenario.alpha_vs_sp500:+.1f}%",
+         f"{scenarios.bear_scenario.alpha_vs_sp500:+.1f}%"],
+        ["Max Drawdown",
+         f"{scenarios.bull_scenario.max_drawdown_pct:.1f}%",
+         f"{scenarios.base_scenario.max_drawdown_pct:.1f}%",
+         f"{scenarios.bear_scenario.max_drawdown_pct:.1f}%"],
+        ["Stops Triggered",
+         str(scenarios.bull_scenario.stops_triggered),
+         str(scenarios.base_scenario.stops_triggered),
+         str(scenarios.bear_scenario.stops_triggered)],
+    ]
+    sc_style_extra = [
+        ("TEXTCOLOR", (1, 0), (1, -1), GREEN),
+        ("TEXTCOLOR", (3, 0), (3, -1), RED),
+        ("ALIGN", (1, 0), (3, -1), "RIGHT"),
+    ]
+    elements.append(
+        _make_table(
+            sc_data,
+            [1.8 * inch, 1.6 * inch, 1.6 * inch, 1.5 * inch],
+            sc_style_extra,
+        )
+    )
+
+    # Alternatives
+    elements.append(Paragraph("Alternative Portfolios", s["H2"]))
+    alt_data = [
+        ["Name", "Target", "Prob", "Positions",
+         "T1/T2/T3", "Max DD"],
+    ]
+    for a in target_return.alternatives:
+        alt_data.append([
+            a.name[:30],
+            f"{a.target_return_pct:.0f}%",
+            f"{a.prob_achieve_target:.0%}",
+            str(a.position_count),
+            f"{a.t1_pct:.0f}/{a.t2_pct:.0f}/{a.t3_pct:.0f}",
+            f"{a.max_drawdown_pct:.1f}%",
+        ])
+    elements.append(
+        _make_table(
+            alt_data,
+            [2.0 * inch, 0.7 * inch, 0.7 * inch, 0.8 * inch, 1.2 * inch, 1.1 * inch],
+        )
+    )
+
+    # Alternative tradeoffs
+    for a in target_return.alternatives:
+        src_label = f" [{a.reasoning_source}]" if a.reasoning_source else ""
+        elements.append(
+            Paragraph(
+                f"<b>{a.name}:</b> {a.key_difference} "
+                f"<i>{a.tradeoff}</i>{src_label}",
+                s["Reasoning"],
+            )
+        )
+
+    # Risk disclosure
+    elements.append(Paragraph("Risk Disclosure", s["H2"]))
+    elements.append(
+        Paragraph(
+            f'<b>Achievability:</b> <font color="{achieve_hex}">'
+            f"{rd.achievability_rating}</font> — {rd.achievability_rationale}",
+            s["Body"],
+        )
+    )
+    elements.append(
+        Paragraph(
+            f"<b>Max Expected Drawdown:</b> {rd.max_expected_drawdown_pct:.1f}% &nbsp; | &nbsp; "
+            f"<b>Recovery Time:</b> {rd.recovery_time_months:.0f} months",
+            s["Body"],
+        )
+    )
+
+    # Construction rationale
+    elements.append(Paragraph("Construction Rationale", s["H2"]))
+    src_note = f" (source: {target_return.narrative_source})" if target_return.narrative_source else ""
+    elements.append(
+        Paragraph(f"{target_return.construction_rationale}{src_note}", s["Body"])
+    )
+
+    # Disclaimer
+    elements.append(Spacer(1, 0.15 * inch))
+    elements.append(Paragraph(rd.disclaimer, s["Disclaimer"]))
+
+    return elements
+
+
 def _implementation_section(reconciler: ReconciliationOutput, s) -> List[Any]:
     """Implementation plan from Agent 08."""
     elements = []
@@ -1542,8 +1777,9 @@ def _agent_summaries(
     pattern: PortfolioPatternOutput,
     historical: Optional[HistoricalAnalysisOutput],
     s,
+    target_return: Optional[TargetReturnOutput] = None,
 ) -> List[Any]:
-    """Summary paragraph for each of the 13 agents."""
+    """Summary paragraph for each of the 14 agents."""
     elements = []
     elements.append(Paragraph("Agent Summaries", s["H1"]))
 
@@ -1566,6 +1802,10 @@ def _agent_summaries(
         (
             "Agent 13: Historical Analyst",
             historical.summary if historical else "Historical analysis not available.",
+        ),
+        (
+            "Agent 14: Target Return Constructor",
+            target_return.summary if target_return else "Target return analysis not available.",
         ),
     ]
 
@@ -1676,12 +1916,13 @@ def generate_pdf_report(
     pattern_output: PortfolioPatternOutput,
     out_path: Path,
     historical_output: Optional[HistoricalAnalysisOutput] = None,
+    target_return_output: Optional[TargetReturnOutput] = None,
 ) -> Path:
     """
-    Generate comprehensive PDF report from all 13 agent outputs.
+    Generate comprehensive PDF report from all 14 agent outputs.
 
     Args:
-        *_output: Validated output from each of the 13 agents.
+        *_output: Validated output from each of the 14 agents.
         out_path: Directory to write the PDF file.
 
     Returns:
@@ -1738,7 +1979,12 @@ def generate_pdf_report(
     story.extend(_returns_section(returns_output, s))
     story.append(PageBreak())
 
-    # 9. Implementation plan
+    # 9. Target return portfolio (Agent 14)
+    if target_return_output:
+        story.extend(_target_return_section(target_return_output, s))
+        story.append(PageBreak())
+
+    # 10. Implementation plan
     story.extend(_implementation_section(reconciler_output, s))
     story.append(PageBreak())
 
@@ -1763,7 +2009,7 @@ def generate_pdf_report(
             strategy_output, portfolio_output, risk_output,
             returns_output, reconciler_output, educator_output,
             synthesis_output, value_output, pattern_output,
-            historical_output, s,
+            historical_output, s, target_return_output,
         )
     )
     story.append(PageBreak())

@@ -405,7 +405,15 @@ def run_returns_projector_pipeline(
     )
 
     # --- Step 8: Risk metrics ---
-    dd_with = compute_drawdown_with_stops(tier_pcts)
+    # Build custom stop losses from Agent 06 LLM recommendations
+    custom_stops = _build_custom_stops(risk_output, portfolio_output)
+    if custom_stops:
+        logger.info(
+            f"[Agent 07] Using LLM-tuned stops: "
+            f"T1={custom_stops[1]:.1%}, T2={custom_stops[2]:.1%}, T3={custom_stops[3]:.1%}"
+        )
+
+    dd_with = compute_drawdown_with_stops(tier_pcts, stop_losses=custom_stops)
     dd_without = compute_drawdown_without_stops(tier_pcts)
     dd_dollar = portfolio_value * dd_with / 100.0
 
@@ -513,6 +521,43 @@ def run_returns_projector_pipeline(
 # ---------------------------------------------------------------------------
 # Internal Helpers
 # ---------------------------------------------------------------------------
+
+def _build_custom_stops(
+    risk_output: RiskAssessment,
+    portfolio_output: PortfolioOutput,
+) -> dict[int, float] | None:
+    """Build tier-averaged stop losses from Agent 06 LLM recommendations.
+
+    Returns {1: frac, 2: frac, 3: frac} or None if no recommendations.
+    """
+    if not risk_output.stop_loss_recommendations:
+        return None
+
+    from ibd_agents.schemas.returns_projection_output import STOP_LOSS_BY_TIER
+
+    # Map symbol → tier from portfolio
+    symbol_tier: dict[str, int] = {}
+    for tier_portfolio in [portfolio_output.tier_1, portfolio_output.tier_2, portfolio_output.tier_3]:
+        for p in tier_portfolio.positions:
+            symbol_tier[p.symbol] = p.tier
+
+    # Collect recommended stops per tier (as fractions)
+    tier_stops: dict[int, list[float]] = {1: [], 2: [], 3: []}
+    for rec in risk_output.stop_loss_recommendations:
+        tier = symbol_tier.get(rec.symbol)
+        if tier and tier in tier_stops:
+            tier_stops[tier].append(rec.recommended_stop_pct / 100.0)
+
+    # Average per tier, fall back to STOP_LOSS_BY_TIER
+    custom_stops: dict[int, float] = {}
+    for t in (1, 2, 3):
+        if tier_stops[t]:
+            custom_stops[t] = sum(tier_stops[t]) / len(tier_stops[t])
+        else:
+            custom_stops[t] = STOP_LOSS_BY_TIER[t]
+
+    return custom_stops
+
 
 def _compute_asset_decomposition(
     portfolio: PortfolioOutput,

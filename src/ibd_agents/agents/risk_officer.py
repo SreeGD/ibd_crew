@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date
+from typing import TYPE_CHECKING, Optional
 
 try:
     from crewai import Agent, Task
@@ -25,6 +26,9 @@ except ImportError:
     HAS_CREWAI = False
     Agent = None  # type: ignore
     Task = None  # type: ignore
+
+if TYPE_CHECKING:
+    from ibd_agents.schemas.analyst_output import AnalystOutput
 
 from ibd_agents.schemas.portfolio_output import PortfolioOutput
 from ibd_agents.schemas.risk_output import (
@@ -129,6 +133,7 @@ Portfolio data:
 def run_risk_pipeline(
     portfolio_output: PortfolioOutput,
     strategy_output: SectorStrategyOutput,
+    analyst_output: Optional["AnalystOutput"] = None,
 ) -> RiskAssessment:
     """
     Run the deterministic risk assessment pipeline without LLM.
@@ -136,6 +141,7 @@ def run_risk_pipeline(
     Args:
         portfolio_output: Validated PortfolioOutput from Agent 05
         strategy_output: Validated SectorStrategyOutput for regime info
+        analyst_output: Optional AnalystOutput for per-stock conviction/volatility
 
     Returns:
         Validated RiskAssessment
@@ -235,7 +241,7 @@ def run_risk_pipeline(
     stress_report = build_stress_test_report(portfolio_output)
 
     # Step 4: Compute Sleep Well scores
-    sleep_scores = compute_sleep_well_scores(check_results, portfolio_output)
+    sleep_scores = compute_sleep_well_scores(check_results, portfolio_output, analyst_output)
 
     # Step 5: Validate keeps
     keep_val = validate_keeps(portfolio_output)

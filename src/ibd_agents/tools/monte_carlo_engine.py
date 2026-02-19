@@ -59,7 +59,8 @@ def run_monte_carlo(
 
     Args:
         positions: List of position dicts with keys:
-            tier (int), allocation_pct (float), stop_loss_pct (float)
+            tier (int), allocation_pct (float), stop_loss_pct (float),
+            volatility_pct (float, optional) — per-stock annualized volatility
         tier_pcts: {1: pct, 2: pct, 3: pct} — tier allocations
         regime: Market regime (bull/neutral/bear)
         target_return: Target return percentage
@@ -106,6 +107,15 @@ def run_monte_carlo(
             scenario_data = tier_data.get(scenario, tier_data["base"])
             mean = scenario_data["mean"]
             std = scenario_data["std"]
+
+            # Per-stock volatility override: scale tier std by relative volatility
+            stock_vol = pos.get("volatility_pct")
+            if stock_vol is not None and stock_vol > 0:
+                tier_avg_vol = tier_data["base"]["std"]
+                if tier_avg_vol > 0:
+                    vol_ratio = stock_vol / tier_avg_vol
+                    vol_ratio = max(0.5, min(2.0, vol_ratio))
+                    std = std * vol_ratio
 
             # Draw return from normal distribution
             pos_return = rng.gauss(mean, std)

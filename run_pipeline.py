@@ -2210,7 +2210,7 @@ def main(data_dir: str = "data", output_dir: str = "output",
     # ===== PHASE 6: Risk Officer =====
     if should_run(6):
         print(f"[Agent 06] Running Risk Officer pipeline ...")
-        risk_output = run_risk_pipeline(portfolio_output, strategy_output)
+        risk_output = run_risk_pipeline(portfolio_output, strategy_output, analyst_output=analyst_output)
         print(f"[Agent 06] Done — {risk_output.overall_status}, "
               f"Sleep Well: {risk_output.sleep_well_scores.overall_score}/10, "
               f"{len(risk_output.vetoes)} vetoes, {len(risk_output.warnings)} warnings")
@@ -2342,6 +2342,7 @@ def main(data_dir: str = "data", output_dir: str = "output",
             portfolio_output, risk_output, returns_output, reconciler_output,
             educator_output, synthesis_output, value_output, pattern_output,
             out_path, historical_output=historical_output,
+            target_return_output=target_return_output,
         )
         print(f"[PDF] Saved: {pdf_file}")
     except Exception as e:
