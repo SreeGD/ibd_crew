@@ -101,6 +101,8 @@ output/
 # Data directory (large PDFs, XLS files)
 data/
 *.zip
+*.xls
+*.xlsx
 
 # ============================================================================
 # OS Files
