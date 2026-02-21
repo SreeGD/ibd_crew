@@ -16,6 +16,8 @@ import re
 import time
 from typing import Optional
 
+from ibd_agents.tools.token_tracker import track as track_tokens
+
 logger = logging.getLogger(__name__)
 
 
@@ -66,12 +68,7 @@ Fields per position:
 - reason: str (1-2 sentence explanation)
 - volatility_flag: str ("high", "normal", or "low")
 
-Guidelines:
-- High-beta/volatile sectors (biotech, chips, crypto): tighter stops (lower %)
-- Defensive sectors (utilities, healthcare, consumer staples): wider stops (higher %)
-- Stocks near imminent catalysts (earnings, FDA): consider tighter stops
-- T1 momentum stocks typically need wider stops (15-22%) to avoid whipsaw
-- T3 defensive positions can have tighter stops (8-12%)
+Guidelines: High-beta sectors → tighter stops; Defensive sectors → wider stops. T1 needs wider stops (15-22%) to avoid whipsaw, T3 can be tighter (8-12%).
 
 Positions:
 {position_list}
@@ -127,9 +124,10 @@ def enrich_stop_loss_llm(
 
             response = client.messages.create(
                 model=model,
-                max_tokens=4096,
+                max_tokens=2048,
                 messages=[{"role": "user", "content": prompt}],
             )
+            track_tokens("enrich_stop_loss_llm", response)
             text = response.content[0].text if response.content else ""
 
             parsed = _parse_stop_loss_response(text, {p["symbol"] for p in batch})

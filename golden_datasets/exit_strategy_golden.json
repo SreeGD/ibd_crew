@@ -1,0 +1,11 @@
+{
+  "sell_rule_count": 8,
+  "min_signals": 10,
+  "health_score_min": 1,
+  "health_score_max": 10,
+  "urgency_levels": ["CRITICAL", "WARNING", "WATCH", "HEALTHY"],
+  "min_critical_signals": 1,
+  "min_healthy_signals": 1,
+  "portfolio_impact_present": true,
+  "evidence_per_signal_min": 1
+}

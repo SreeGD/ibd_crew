@@ -1,0 +1,57 @@
+{
+  "_comment": "Golden dataset for Agent 16 Regime Detector. Deterministic pipeline with 'healthy_uptrend' mock scenario.",
+  "regime": "CONFIRMED_UPTREND",
+  "confidence": "HIGH",
+  "exposure_min": 80,
+  "exposure_max": 100,
+  "health_score_min": 7,
+  "health_score_max": 10,
+  "bullish_signals_min": 3,
+  "bearish_signals_max": 1,
+  "transition_conditions_min": 1,
+  "executive_summary_min_length": 100,
+  "legacy_regime": "bull",
+  "ftd_detected": false,
+  "regime_change_changed": false,
+  "indicator_count": 5,
+  "scenarios": {
+    "healthy_uptrend": {
+      "regime": "CONFIRMED_UPTREND",
+      "legacy": "bull",
+      "exposure_min": 80,
+      "exposure_max": 100,
+      "health_min": 7
+    },
+    "under_pressure": {
+      "regime": "UPTREND_UNDER_PRESSURE",
+      "legacy": "neutral",
+      "exposure_min": 40,
+      "exposure_max": 60,
+      "health_min": 4,
+      "health_max": 6
+    },
+    "correction": {
+      "regime": "CORRECTION",
+      "legacy": "bear",
+      "exposure_min": 0,
+      "exposure_max": 0,
+      "health_max": 3
+    },
+    "rally_attempt": {
+      "regime": "RALLY_ATTEMPT",
+      "legacy": "bear",
+      "exposure_min": 0,
+      "exposure_max": 20,
+      "health_min": 2,
+      "health_max": 4
+    },
+    "follow_through_day": {
+      "regime": "FOLLOW_THROUGH_DAY",
+      "legacy": "neutral",
+      "exposure_min": 20,
+      "exposure_max": 40,
+      "health_min": 4,
+      "health_max": 6
+    }
+  }
+}

@@ -35,6 +35,7 @@ from ibd_agents.schemas.pattern_output import (
     PATTERN_ALERT_TYPES,
     TIER_PATTERN_REQUIREMENTS,
 )
+from ibd_agents.tools.token_tracker import track as track_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -963,41 +964,20 @@ def assess_tier_fit(
 # ---------------------------------------------------------------------------
 
 _PATTERN_SCORING_PROMPT_TEMPLATE = """\
-Score each stock against 5 wealth-creation patterns using your knowledge.
-Return ONLY a valid JSON array — no markdown, no code fences, no extra text.
+Score each stock against 5 wealth-creation patterns. Return ONLY valid JSON array.
 
-Pattern 1: Platform Economics (0-12)
-  Network Effects (0-4): Direct=4, Indirect/two-sided=3, Data=2, None=0
-  Switching Costs (0-4): Mission-critical=4, High(6+mo)=3, Moderate=2, Low=0
-  Ecosystem Lock-in (0-4): 10K+ devs=4, 1K-10K=3, Nascent=2, None=0
+P1: Platform Economics (0-12) = Network Effects(0-4) + Switching Costs(0-4) + Ecosystem Lock-in(0-4)
+P2: Self-Cannibalization (0-10) = Active Cannibal(0-4) + Mgmt Track Record(0-3) + R&D Intensity(0-3)
+P3: Capital Allocation (0-10) = ROIC vs WACC(0-4) + Deployment(0-3) + Insider Alignment(0-3)
+P4: Category Creation (0-10) = Category Ownership(0-4) + TAM Expansion(0-3) + Moat Depth(0-3)
+P5: Inflection Timing (0-8) = Inflection ID(0-3) + Rev Acceleration(0-3) + Consensus(0-2)
 
-Pattern 2: Self-Cannibalization (0-10)
-  Active Cannibalization (0-4): >15% rev in competing products=4, 10-15%=3, 5-10%=2, None=0
-  Management Track Record (0-3): Successful pivot=3, Acknowledged need=2, Defensive=0
-  R&D Intensity (0-3): >15% & next-gen=3, >10% some=2, Sustaining=1, Low=0
+Per stock return: symbol, p1(0-12), p2(0-10), p3(0-10), p4(0-10), p5(0-8),
+p1_justification(1 sentence), p2_justification, p3_justification,
+p4_justification, p5_justification,
+dominant_pattern(str), pattern_narrative(2-3 sentences)
 
-Pattern 3: Capital Allocation (0-10)
-  ROIC vs WACC (0-4): >15pp spread(3yr)=4, 10-15pp=3, 5-10pp=2, Below=0
-  Deployment Track Record (0-3): 5yr CAGR>20% expanding margins=3, >15% stable=2, Contracting=1, Stagnant=0
-  Insider Alignment (0-3): CEO>5% or significant buying=3, 1-5%=2, Minimal+stock comp=1, Low=0
-
-Pattern 4: Category Creation (0-10)
-  Category Ownership (0-4): IS the category=4, >40% share in category they defined=3, Fast follower<3yr=2, Established=0
-  TAM Expansion (0-3): >3x in 5yr=3, 2-3x=2, Stable=1, Shrinking=0
-  Moat Depth (0-3): No direct competitor=3, 1-2 but dominant=2, Differentiated=1, Commodity=0
-
-Pattern 5: Inflection Timing (0-8)
-  Inflection ID (0-3): Primary beneficiary<15% penetration=3, 15-40%=2, >40%=1, None=0
-  Revenue Acceleration (0-3): 3+ consecutive QoQ acceleration=3, 2Q=2, 1Q=1, Decelerating=0
-  Consensus Positioning (0-2): <30% analyst BUY=2, 30-60%=1, >60%=0
-
-Per stock, return JSON object with:
-  symbol, p1(0-12), p2(0-10), p3(0-10), p4(0-10), p5(0-8),
-  p1_justification(1 sentence), p2_justification, p3_justification,
-  p4_justification, p5_justification,
-  dominant_pattern(str), pattern_narrative(2-3 sentences)
-
-Stocks to score:
+Stocks:
 {stock_list}
 """
 
@@ -1005,7 +985,7 @@ Stocks to score:
 def score_patterns_llm(
     stocks: list[dict],
     model: str = "claude-haiku-4-5-20251001",
-    batch_size: int = 5,
+    batch_size: int = 15,
 ) -> dict[str, dict]:
     """
     Score 5 wealth-creation patterns per stock using LLM.
@@ -1064,9 +1044,10 @@ def score_patterns_llm(
         try:
             response = client.messages.create(
                 model=model,
-                max_tokens=4096,
+                max_tokens=2048,
                 messages=[{"role": "user", "content": prompt}],
             )
+            track_tokens("score_patterns_llm", response)
             text = response.content[0].text if response.content else ""
             batch_results = _parse_pattern_scores(text, {s["symbol"] for s in batch})
             results.update(batch_results)
@@ -1232,9 +1213,10 @@ def enrich_alert_narratives_llm(
 
         response = client.messages.create(
             model=model,
-            max_tokens=2048,
+            max_tokens=1024,
             messages=[{"role": "user", "content": prompt}],
         )
+        track_tokens("enrich_alert_narratives_llm", response)
         text = response.content[0].text if response.content else ""
 
         if time.monotonic() - _t0 > 60:
@@ -1373,9 +1355,10 @@ def match_historical_patterns_llm(
 
         response = client.messages.create(
             model=model,
-            max_tokens=1024,
+            max_tokens=768,
             messages=[{"role": "user", "content": prompt}],
         )
+        track_tokens("find_historical_pattern_llm", response)
         text = response.content[0].text if response.content else ""
 
         if time.monotonic() - _t0 > 60:

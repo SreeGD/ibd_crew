@@ -394,6 +394,9 @@ from ibd_agents.tools.position_differ import (
     MAX_TURNOVER_RATIO,
     GRADUATED_TRIM_TARGET_PCT,
     GRADUATED_TRIM_WEEK,
+    VALUE_SHIELD_MIN_SCORE,
+    VALUE_SHIELD_CATEGORIES,
+    VALUE_SHIELD_MAX_TRAP_RISK,
 )
 
 
@@ -586,3 +589,143 @@ class TestSellQualityGate:
         result = apply_sell_quality_gate(actions, ctx)
         assert result[0].action_type == "BUY"
         assert result[1].action_type == "KEEP"
+
+
+# ---------------------------------------------------------------------------
+# Value Shield Tests
+# ---------------------------------------------------------------------------
+
+class TestValueShield:
+    """Tests for Rule 5: value shield that converts SELL → TRIM for strong value stocks."""
+
+    @pytest.mark.schema
+    def test_quality_value_shielded(self):
+        """Quality Value with score >= 60 and low trap risk → TRIM."""
+        actions = [_make_sell_action("UNH")]
+        ctx = SellQualityContext(
+            value_map={"UNH": {
+                "value_score": 75.0,
+                "value_category": "Quality Value",
+                "value_trap_risk_level": "Low",
+            }},
+        )
+        result = apply_sell_quality_gate(actions, ctx)
+        assert result[0].action_type == "TRIM"
+        assert "value shield" in result[0].rationale.lower()
+
+    @pytest.mark.schema
+    def test_garp_shielded(self):
+        """GARP with score >= 60 and no trap risk → TRIM."""
+        actions = [_make_sell_action("AMZN")]
+        ctx = SellQualityContext(
+            value_map={"AMZN": {
+                "value_score": 68.0,
+                "value_category": "GARP",
+                "value_trap_risk_level": "None",
+            }},
+        )
+        result = apply_sell_quality_gate(actions, ctx)
+        assert result[0].action_type == "TRIM"
+        assert "garp" in result[0].rationale.lower()
+
+    @pytest.mark.schema
+    def test_deep_value_shielded(self):
+        """Deep Value with score >= 60 and low trap risk → TRIM."""
+        actions = [_make_sell_action("COP")]
+        ctx = SellQualityContext(
+            value_map={"COP": {
+                "value_score": 62.0,
+                "value_category": "Deep Value",
+                "value_trap_risk_level": "None",
+            }},
+        )
+        result = apply_sell_quality_gate(actions, ctx)
+        assert result[0].action_type == "TRIM"
+
+    @pytest.mark.schema
+    def test_low_score_not_shielded(self):
+        """Value score < 60 → not shielded (stays SELL)."""
+        actions = [_make_sell_action("XYZ")]
+        ctx = SellQualityContext(
+            value_map={"XYZ": {
+                "value_score": 45.0,
+                "value_category": "Quality Value",
+                "value_trap_risk_level": "Low",
+            }},
+        )
+        result = apply_sell_quality_gate(actions, ctx)
+        assert result[0].action_type == "SELL"
+
+    @pytest.mark.schema
+    def test_high_trap_risk_not_shielded(self):
+        """High trap risk → not shielded (stays SELL)."""
+        actions = [_make_sell_action("XYZ")]
+        ctx = SellQualityContext(
+            value_map={"XYZ": {
+                "value_score": 80.0,
+                "value_category": "GARP",
+                "value_trap_risk_level": "High",
+            }},
+        )
+        result = apply_sell_quality_gate(actions, ctx)
+        assert result[0].action_type == "SELL"
+
+    @pytest.mark.schema
+    def test_moderate_trap_risk_not_shielded(self):
+        """Moderate trap risk → not shielded (stays SELL)."""
+        actions = [_make_sell_action("XYZ")]
+        ctx = SellQualityContext(
+            value_map={"XYZ": {
+                "value_score": 80.0,
+                "value_category": "Deep Value",
+                "value_trap_risk_level": "Moderate",
+            }},
+        )
+        result = apply_sell_quality_gate(actions, ctx)
+        assert result[0].action_type == "SELL"
+
+    @pytest.mark.schema
+    def test_not_value_category_not_shielded(self):
+        """'Not Value' category → not shielded (stays SELL)."""
+        actions = [_make_sell_action("XYZ")]
+        ctx = SellQualityContext(
+            value_map={"XYZ": {
+                "value_score": 90.0,
+                "value_category": "Not Value",
+                "value_trap_risk_level": "None",
+            }},
+        )
+        result = apply_sell_quality_gate(actions, ctx)
+        assert result[0].action_type == "SELL"
+
+    @pytest.mark.schema
+    def test_dividend_value_not_shielded(self):
+        """'Dividend Value' category → not shielded (not in shield set)."""
+        actions = [_make_sell_action("XYZ")]
+        ctx = SellQualityContext(
+            value_map={"XYZ": {
+                "value_score": 90.0,
+                "value_category": "Dividend Value",
+                "value_trap_risk_level": "None",
+            }},
+        )
+        result = apply_sell_quality_gate(actions, ctx)
+        assert result[0].action_type == "SELL"
+
+    @pytest.mark.schema
+    def test_no_value_data_backward_compatible(self):
+        """Empty value_map → no value shielding, other rules still work."""
+        actions = [_make_sell_action("AAPL")]
+        ctx = SellQualityContext()  # Empty context, no value_map
+        result = apply_sell_quality_gate(actions, ctx)
+        assert result[0].action_type == "SELL"
+
+    @pytest.mark.schema
+    def test_value_shield_constants(self):
+        """Verify value shield constants have expected values."""
+        assert VALUE_SHIELD_MIN_SCORE == 60.0
+        assert "Quality Value" in VALUE_SHIELD_CATEGORIES
+        assert "GARP" in VALUE_SHIELD_CATEGORIES
+        assert "Deep Value" in VALUE_SHIELD_CATEGORIES
+        assert "None" in VALUE_SHIELD_MAX_TRAP_RISK
+        assert "Low" in VALUE_SHIELD_MAX_TRAP_RISK

@@ -193,6 +193,7 @@ def run_reconciler_pipeline(
     sell_quality_ctx = build_sell_quality_context(
         analyst_output=analyst_output,
         rotation_output=rotation_output,
+        value_output=value_output,
     )
     actions = apply_sell_quality_gate(
         actions, sell_quality_ctx, current_holdings.total_value

@@ -15,6 +15,8 @@ import os
 import time
 from typing import Optional
 
+from ibd_agents.tools.token_tracker import track as track_tokens
+
 logger = logging.getLogger(__name__)
 
 
@@ -35,14 +37,9 @@ Current rotation analysis:
 - Signals Active: {signals_active}/5
 - Velocity: {velocity}
 
-Provide a 2-4 paragraph narrative (100-500 words) that:
-1. Places this rotation pattern in historical context (cite similar past rotations, e.g. 2020 growth->value, 2022 growth->commodity)
-2. Explains what typically happens NEXT in this type of rotation
-3. Identifies key risks and potential sector opportunities
-4. Notes any unusual aspects of the current rotation vs historical precedent
+Provide a 2-3 paragraph narrative (100-300 words) covering historical context, what typically happens next, and key risks. Focus on factual historical parallels.
 
 Return ONLY the narrative text — no JSON, no markdown headers, no bullet points.
-Focus on factual historical parallels and pattern recognition.
 """
 
 
@@ -85,9 +82,10 @@ def generate_rotation_narrative_llm(
 
         response = client.messages.create(
             model=model,
-            max_tokens=1024,
+            max_tokens=768,
             messages=[{"role": "user", "content": prompt}],
         )
+        track_tokens("generate_rotation_narrative_llm", response)
         text = response.content[0].text.strip() if response.content else ""
 
         if len(text) < 100:

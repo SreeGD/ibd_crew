@@ -15,6 +15,8 @@ import os
 import time
 from typing import Optional
 
+from ibd_agents.tools.token_tracker import track as track_tokens
+
 logger = logging.getLogger(__name__)
 
 
@@ -60,12 +62,7 @@ Fields per position:
 - size_adjustment_pct: float (between -2.0 and +2.0, the % to add/subtract from target)
 - reason: str (1-2 sentence explanation)
 
-Guidelines:
-- Stocks with imminent catalysts (earnings in <14 days): consider reducing size (-0.5 to -1.0%)
-- Low-volatility defensive names: consider increasing size (+0.5 to +1.0%)
-- High-beta momentum stocks: may need size reduction if concentrated
-- ETFs generally have lower volatility than individual stocks
-- T1 momentum positions can tolerate larger adjustments than T3 defensive
+Guidelines: Imminent catalysts (<14d) → reduce size; Low-vol defensives → increase size. ETFs generally lower vol than stocks. T1 tolerates larger adjustments than T3.
 
 Positions:
 {position_list}
@@ -124,9 +121,10 @@ def enrich_sizing_llm(
 
             response = client.messages.create(
                 model=model,
-                max_tokens=4096,
+                max_tokens=2048,
                 messages=[{"role": "user", "content": prompt}],
             )
+            track_tokens("enrich_sizing_llm", response)
             text = response.content[0].text if response.content else ""
 
             parsed = _parse_sizing_response(text, {p["symbol"] for p in batch})

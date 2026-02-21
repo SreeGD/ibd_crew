@@ -15,6 +15,8 @@ import os
 import time
 from typing import Optional
 
+from ibd_agents.tools.token_tracker import track as track_tokens
+
 logger = logging.getLogger(__name__)
 
 
@@ -24,10 +26,7 @@ logger = logging.getLogger(__name__)
 
 _SELECTION_RATIONALE_PROMPT = """\
 For each position below, write a 1-2 sentence rationale explaining WHY this \
-specific stock was selected for a target return portfolio. Focus on:
-- What makes it stand out (RS breakout, EPS momentum, sector leadership)
-- Sector momentum context (leading/improving/lagging/declining)
-- Conviction factors (multi-source validation, tier positioning)
+specific stock was selected for a target return portfolio.
 
 Return a JSON array with one object per position. Use ONLY valid JSON — \
 no markdown, no code fences, no extra text.
@@ -99,9 +98,10 @@ def enrich_selection_rationale_llm(
 
             response = client.messages.create(
                 model=model,
-                max_tokens=4096,
+                max_tokens=2048,
                 messages=[{"role": "user", "content": prompt}],
             )
+            track_tokens("enrich_selection_rationale_llm", response)
             text = response.content[0].text if response.content else ""
 
             parsed = _parse_selection_rationale_response(
@@ -185,11 +185,7 @@ Portfolio parameters:
 - Top sectors: {top_sectors}
 - Top holdings: {top_positions}
 
-Write a 3-5 sentence construction rationale (minimum 100 characters) explaining:
-1. WHY this tier mix was chosen for this regime and target
-2. What sector conditions support this construction
-3. What gives the portfolio its edge (concentration, momentum, etc.)
-4. What could go wrong
+Write a 2-3 sentence construction rationale (minimum 100 characters) explaining why this tier mix was chosen and what market conditions support it.
 
 Return ONLY the narrative text — no JSON, no markdown headers, no bullet points.
 """
@@ -236,9 +232,10 @@ def enrich_construction_narrative_llm(
 
         response = client.messages.create(
             model=model,
-            max_tokens=2048,
+            max_tokens=1024,
             messages=[{"role": "user", "content": prompt}],
         )
+        track_tokens("enrich_construction_narrative_llm", response)
         text = response.content[0].text if response.content else ""
         text = text.strip()
 
@@ -282,8 +279,6 @@ For each alternative below, explain:
 (1-2 sentences, min 10 characters)
 2. tradeoff: What you gain and give up vs the primary portfolio \
 (1-2 sentences, min 10 characters)
-
-Be specific about risk/return tradeoffs and regime implications.
 
 Return a JSON array with one object per alternative. Use ONLY valid JSON — \
 no markdown, no code fences, no extra text.
@@ -346,9 +341,10 @@ def enrich_alternative_reasoning_llm(
 
         response = client.messages.create(
             model=model,
-            max_tokens=4096,
+            max_tokens=1536,
             messages=[{"role": "user", "content": prompt}],
         )
+        track_tokens("enrich_alternative_reasoning_llm", response)
         text = response.content[0].text if response.content else ""
 
         valid_names = {a["name"] for a in alternatives}

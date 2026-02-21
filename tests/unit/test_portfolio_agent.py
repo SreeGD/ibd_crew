@@ -463,3 +463,211 @@ class TestDynamicSizingPipeline:
             det_positions.extend([p for p in tier.positions if p.sizing_source == "deterministic"])
         # Without API key, all should be deterministic
         assert len(det_positions) > 0
+
+
+# ---------------------------------------------------------------------------
+# Historical Momentum Adjustment Tests
+# ---------------------------------------------------------------------------
+
+from ibd_agents.schemas.historical_output import (
+    HistoricalAnalysisOutput,
+    HistoricalStoreMeta,
+    StockHistoricalContext,
+)
+from ibd_agents.agents.portfolio_manager import _build_momentum_map
+
+
+def _make_stock_analysis(symbol: str, direction: str) -> StockHistoricalContext:
+    """Helper to create a minimal StockHistoricalContext."""
+    return StockHistoricalContext(
+        symbol=symbol,
+        weeks_tracked=4,
+        momentum_direction=direction,
+        momentum_score=50.0 if direction == "improving" else (-50.0 if direction == "deteriorating" else 0.0),
+    )
+
+
+def _make_historical_output(analyses: list[StockHistoricalContext]) -> HistoricalAnalysisOutput:
+    """Helper to create a minimal HistoricalAnalysisOutput."""
+    return HistoricalAnalysisOutput(
+        store_meta=HistoricalStoreMeta(
+            store_available=True, total_snapshots=4,
+            date_range=["2026-01-20", "2026-02-20"],
+            total_records=len(analyses), unique_symbols=len(analyses),
+        ),
+        stock_analyses=analyses,
+        historical_analogs=[],
+        improving_stocks=[a.symbol for a in analyses if a.momentum_direction == "improving"],
+        deteriorating_stocks=[a.symbol for a in analyses if a.momentum_direction == "deteriorating"],
+        stable_stocks=[a.symbol for a in analyses if a.momentum_direction == "stable"],
+        historical_source="chromadb",
+        analysis_date="2026-02-20",
+        summary="Test historical output for momentum adjustment tests with sample analysis data",
+    )
+
+
+class TestMomentumAdjustment:
+    """Tests for historical momentum conviction adjustment."""
+
+    @pytest.fixture
+    def pipeline_outputs(self):
+        return _get_pipeline_outputs()
+
+    @pytest.mark.schema
+    def test_backward_compatible_none(self, pipeline_outputs):
+        """historical_output=None → no momentum adjustments."""
+        analyst, strategy, _, _ = pipeline_outputs
+        output = run_portfolio_pipeline(strategy, analyst, historical_output=None)
+        for tier in [output.tier_1, output.tier_2, output.tier_3]:
+            for p in tier.positions:
+                assert p.momentum_adjustment is None, \
+                    f"{p.symbol} has momentum_adjustment={p.momentum_adjustment}"
+
+    @pytest.mark.schema
+    def test_improving_increases_conviction(self, pipeline_outputs):
+        """Improving momentum → conviction +1."""
+        analyst, strategy, _, _ = pipeline_outputs
+        # Get baseline portfolio
+        baseline = run_portfolio_pipeline(strategy, analyst)
+        # Find a position to test
+        base_pos = baseline.tier_1.positions[0]
+        if base_pos.conviction >= 10:
+            # Find one that isn't already capped
+            for p in baseline.tier_1.positions + baseline.tier_2.positions:
+                if p.conviction < 10:
+                    base_pos = p
+                    break
+
+        if base_pos.conviction >= 10:
+            pytest.skip("All positions already at max conviction")
+
+        historical = _make_historical_output([
+            _make_stock_analysis(base_pos.symbol, "improving"),
+        ])
+        output = run_portfolio_pipeline(strategy, analyst, historical_output=historical)
+
+        # Find the position in the new output
+        found = None
+        for tier in [output.tier_1, output.tier_2, output.tier_3]:
+            for p in tier.positions:
+                if p.symbol == base_pos.symbol:
+                    found = p
+                    break
+            if found:
+                break
+
+        assert found is not None, f"Position {base_pos.symbol} not found in output"
+        assert found.conviction == base_pos.conviction + 1
+        assert found.momentum_adjustment == 1
+
+    @pytest.mark.schema
+    def test_deteriorating_decreases_conviction(self, pipeline_outputs):
+        """Deteriorating momentum → conviction -1."""
+        analyst, strategy, _, _ = pipeline_outputs
+        baseline = run_portfolio_pipeline(strategy, analyst)
+        # Find a position with conviction > 1
+        base_pos = None
+        for tier in [baseline.tier_1, baseline.tier_2, baseline.tier_3]:
+            for p in tier.positions:
+                if p.conviction > 1:
+                    base_pos = p
+                    break
+            if base_pos:
+                break
+
+        assert base_pos is not None, "No position with conviction > 1"
+
+        historical = _make_historical_output([
+            _make_stock_analysis(base_pos.symbol, "deteriorating"),
+        ])
+        output = run_portfolio_pipeline(strategy, analyst, historical_output=historical)
+
+        found = None
+        for tier in [output.tier_1, output.tier_2, output.tier_3]:
+            for p in tier.positions:
+                if p.symbol == base_pos.symbol:
+                    found = p
+                    break
+            if found:
+                break
+
+        assert found is not None
+        assert found.conviction == base_pos.conviction - 1
+        assert found.momentum_adjustment == -1
+
+    @pytest.mark.schema
+    def test_stable_no_change(self, pipeline_outputs):
+        """Stable momentum → no conviction change."""
+        analyst, strategy, _, _ = pipeline_outputs
+        baseline = run_portfolio_pipeline(strategy, analyst)
+        base_pos = baseline.tier_1.positions[0]
+
+        historical = _make_historical_output([
+            _make_stock_analysis(base_pos.symbol, "stable"),
+        ])
+        output = run_portfolio_pipeline(strategy, analyst, historical_output=historical)
+
+        found = None
+        for tier in [output.tier_1, output.tier_2, output.tier_3]:
+            for p in tier.positions:
+                if p.symbol == base_pos.symbol:
+                    found = p
+                    break
+            if found:
+                break
+
+        assert found is not None
+        assert found.conviction == base_pos.conviction
+        assert found.momentum_adjustment is None  # stable means no adjustment
+
+    @pytest.mark.schema
+    def test_conviction_capped_at_10(self, pipeline_outputs):
+        """Improving momentum on conviction=10 → stays at 10, no adjustment."""
+        analyst, strategy, _, _ = pipeline_outputs
+        baseline = run_portfolio_pipeline(strategy, analyst)
+        # Find a position at conviction 10
+        base_pos = None
+        for tier in [baseline.tier_1, baseline.tier_2, baseline.tier_3]:
+            for p in tier.positions:
+                if p.conviction == 10:
+                    base_pos = p
+                    break
+            if base_pos:
+                break
+
+        if base_pos is None:
+            pytest.skip("No position with conviction=10")
+
+        historical = _make_historical_output([
+            _make_stock_analysis(base_pos.symbol, "improving"),
+        ])
+        output = run_portfolio_pipeline(strategy, analyst, historical_output=historical)
+
+        found = None
+        for tier in [output.tier_1, output.tier_2, output.tier_3]:
+            for p in tier.positions:
+                if p.symbol == base_pos.symbol:
+                    found = p
+                    break
+            if found:
+                break
+
+        assert found is not None
+        assert found.conviction == 10
+        assert found.momentum_adjustment is None  # No change since capped
+
+    @pytest.mark.schema
+    def test_build_momentum_map_none(self):
+        """_build_momentum_map(None) → empty dict."""
+        assert _build_momentum_map(None) == {}
+
+    @pytest.mark.schema
+    def test_build_momentum_map_populated(self):
+        """_build_momentum_map returns symbol→direction map."""
+        historical = _make_historical_output([
+            _make_stock_analysis("AAPL", "improving"),
+            _make_stock_analysis("MSFT", "deteriorating"),
+            _make_stock_analysis("GOOG", "stable"),
+        ])
+        result = _build_momentum_map(historical)
+        assert result == {"AAPL": "improving", "MSFT": "deteriorating", "GOOG": "stable"}

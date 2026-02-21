@@ -18,6 +18,8 @@ import time
 from datetime import date, datetime
 from typing import Optional
 
+from ibd_agents.tools.token_tracker import track as track_tokens
+
 logger = logging.getLogger(__name__)
 
 
@@ -66,13 +68,6 @@ Fields per stock:
 - catalyst_type: str (one of: "earnings", "fda", "product_launch", "conference", "guidance", "dividend", "split", "other")
 - catalyst_description: str (1-2 sentence description of the catalyst event)
 - days_until: int or null (approximate days from {today} until the catalyst)
-
-Focus on:
-1. Next earnings report date (most common catalyst)
-2. FDA approval decisions or PDUFA dates (for biotech/pharma)
-3. Product launches or major announcements
-4. Analyst day / investor conferences
-5. Guidance updates
 
 If you don't know the exact date, provide your best estimate. If no catalyst is identifiable, use null for date and days_until, and set catalyst_type to "other" with a brief description.
 
@@ -132,9 +127,10 @@ def enrich_catalyst_llm(
 
             response = client.messages.create(
                 model=model,
-                max_tokens=4096,
+                max_tokens=2048,
                 messages=[{"role": "user", "content": prompt}],
             )
+            track_tokens("enrich_catalyst_llm", response)
             text = response.content[0].text if response.content else ""
 
             parsed = _parse_catalyst_response(text, {s["symbol"] for s in batch})

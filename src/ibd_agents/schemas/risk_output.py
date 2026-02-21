@@ -29,6 +29,7 @@ CHECK_NAMES: list[str] = [
     "volume_confirmation",
     "keeps_validation",
     "stress_test",
+    "pattern_quality",
 ]
 
 VALID_CHECK_STATUS = ("PASS", "WARNING", "VETO")
@@ -178,8 +179,8 @@ class RiskAssessment(BaseModel):
     """Top-level output contract for the Risk Officer."""
 
     check_results: List[RiskCheck] = Field(
-        ..., min_length=10, max_length=10,
-        description="All 10 risk checks"
+        ..., min_length=11, max_length=11,
+        description="All 11 risk checks"
     )
     vetoes: List[Veto] = Field(default_factory=list)
     warnings: List[RiskWarning] = Field(default_factory=list)
@@ -212,7 +213,7 @@ class RiskAssessment(BaseModel):
 
     @model_validator(mode="after")
     def validate_check_names_complete(self) -> "RiskAssessment":
-        """All 10 check names present."""
+        """All 11 check names present."""
         names = {c.check_name for c in self.check_results}
         expected = set(CHECK_NAMES)
         missing = expected - names

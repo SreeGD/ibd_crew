@@ -69,13 +69,11 @@ def _extract_account_from_filename(filename: str) -> str:
     return name[:20]
 
 
-def _find_etrade_columns(table: list[list]) -> tuple[int, int] | None:
+def _find_etrade_columns(table: list[list]) -> tuple[int, int, int | None, int | None] | None:
     """
-    Find Qty and Value column indices from the E*TRADE table header.
+    Find Qty, Value, Price Paid, and Total Gain % column indices from E*TRADE header.
 
-    Page 1 has an extra None column, shifting indices (Qty=5, Value=10).
-    Page 2+ has standard layout (Qty=4, Value=9).
-    Returns (qty_idx, value_idx) or None if header not found.
+    Returns (qty_idx, value_idx, price_paid_idx, gain_pct_idx) or None if header not found.
     """
     for row in table:
         if not row or not row[0]:
@@ -86,16 +84,22 @@ def _find_etrade_columns(table: list[list]) -> tuple[int, int] | None:
         # Found header row — map column names to indices
         qty_idx = None
         val_idx = None
+        price_paid_idx = None
+        gain_pct_idx = None
         for i, cell in enumerate(row):
             if cell is None:
                 continue
             cell_clean = cell.strip().replace("\n", " ")
             if "Qty" in cell_clean:
                 qty_idx = i
-            elif cell_clean == "Value $":
+            elif cell_clean == "Value $" or cell_clean.startswith("Value $"):
                 val_idx = i
+            elif "Price Paid" in cell_clean:
+                price_paid_idx = i
+            elif "Total Gain %" in cell_clean:
+                gain_pct_idx = i
         if qty_idx is not None and val_idx is not None:
-            return (qty_idx, val_idx)
+            return (qty_idx, val_idx, price_paid_idx, gain_pct_idx)
     return None
 
 
@@ -123,7 +127,7 @@ def read_etrade_pdf(pdf_path: Path) -> list[CurrentHolding]:
                 if col_map is None:
                     continue  # No valid header in this table
 
-                qty_idx, val_idx = col_map
+                qty_idx, val_idx, price_paid_idx, gain_pct_idx = col_map
 
                 for row in table:
                     if not row or not row[0]:
@@ -160,12 +164,35 @@ def read_etrade_pdf(pdf_path: Path) -> list[CurrentHolding]:
                         if shares <= 0 or market_value <= 0:
                             continue
 
+                        # Extract cost basis from Price Paid (per-share)
+                        cost_basis = None
+                        if price_paid_idx is not None and len(row) > price_paid_idx:
+                            try:
+                                pp_str = row[price_paid_idx]
+                                if pp_str:
+                                    price_paid = float(pp_str.replace(",", "").strip())
+                                    cost_basis = round(price_paid * shares, 2)
+                            except (ValueError, TypeError):
+                                pass
+
+                        # Extract gain/loss %
+                        gain_loss_pct = None
+                        if gain_pct_idx is not None and len(row) > gain_pct_idx:
+                            try:
+                                gp_str = row[gain_pct_idx]
+                                if gp_str:
+                                    gain_loss_pct = float(gp_str.replace("%", "").replace("+", "").strip())
+                            except (ValueError, TypeError):
+                                pass
+
                         holdings.append(CurrentHolding(
                             symbol=symbol,
                             shares=round(shares, 4),
                             market_value=round(market_value, 2),
                             account=account,
                             sector="UNKNOWN",
+                            cost_basis=cost_basis,
+                            gain_loss_pct=gain_loss_pct,
                         ))
                     except (ValueError, TypeError, IndexError) as e:
                         logger.debug(f"Skipping row in {pdf_path.name}: {e}")
@@ -241,8 +268,8 @@ def read_schwab_pdf(pdf_path: Path) -> list[CurrentHolding]:
 
                 symbol = sym_match.group(1)
 
-                # Extract qty: the number right before the first $ sign
-                qty_match = re.search(r'(\d+(?:\.\d+)?)\s+\$', line)
+                # Extract qty: the number (possibly with commas) right before the first $ sign
+                qty_match = re.search(r'([\d,]+(?:\.\d+)?)\s+\$', line)
                 if not qty_match:
                     continue
 
@@ -253,12 +280,20 @@ def read_schwab_pdf(pdf_path: Path) -> list[CurrentHolding]:
                     continue
 
                 try:
-                    shares = float(qty_match.group(1))
+                    shares = float(qty_match.group(1).replace(",", ""))
                     # Dollar amounts: [Price, PriceChg, CostBasis, MktVal, ...]
+                    cost_basis_total = float(dollar_amounts[2].replace(",", ""))
                     mkt_val = float(dollar_amounts[3].replace(",", ""))
 
                     if shares <= 0 or mkt_val <= 0:
                         continue
+
+                    # Compute gain/loss % from cost basis and market value
+                    gain_loss_pct = None
+                    if cost_basis_total > 0:
+                        gain_loss_pct = round(
+                            (mkt_val - cost_basis_total) / cost_basis_total * 100, 2
+                        )
 
                     holdings.append(CurrentHolding(
                         symbol=symbol,
@@ -266,6 +301,8 @@ def read_schwab_pdf(pdf_path: Path) -> list[CurrentHolding]:
                         market_value=round(mkt_val, 2),
                         account=account,
                         sector="UNKNOWN",
+                        cost_basis=round(cost_basis_total, 2),
+                        gain_loss_pct=gain_loss_pct,
                     ))
                 except (ValueError, IndexError) as e:
                     logger.debug(f"Skipping line in {pdf_path.name}: {e}")

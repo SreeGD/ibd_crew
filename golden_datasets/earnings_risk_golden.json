@@ -1,0 +1,12 @@
+{
+  "min_strategies_per_analysis": 2,
+  "scenarios_per_strategy": 3,
+  "lookforward_days": 21,
+  "has_concentration": true,
+  "has_executive_summary": true,
+  "forbidden_prediction_words": ["will beat", "likely to beat", "expect a beat", "will miss", "likely to miss"],
+  "valid_risk_levels": ["LOW", "MODERATE", "HIGH", "CRITICAL"],
+  "valid_cushion_categories": ["COMFORTABLE", "MANAGEABLE", "THIN", "INSUFFICIENT"],
+  "valid_strategy_types": ["HOLD_FULL", "HOLD_AND_ADD", "TRIM_TO_HALF", "TRIM_TO_QUARTER", "EXIT_BEFORE_EARNINGS", "HEDGE_WITH_PUT"],
+  "valid_data_sources": ["real", "mock"]
+}

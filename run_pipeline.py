@@ -38,6 +38,10 @@ from ibd_agents.agents.value_investor_agent import run_value_investor_pipeline
 from ibd_agents.agents.pattern_agent import run_pattern_pipeline
 from ibd_agents.agents.historical_analyst import run_historical_pipeline
 from ibd_agents.agents.target_return_constructor import run_target_return_pipeline
+from ibd_agents.agents.exit_strategist import run_exit_strategist_pipeline
+from ibd_agents.tools.portfolio_reader import read_brokerage_pdfs
+from ibd_agents.agents.regime_detector import run_regime_detector_pipeline
+from ibd_agents.agents.earnings_risk_analyst import run_earnings_risk_pipeline
 
 # Schema imports for snapshot deserialization
 from ibd_agents.schemas.research_output import ResearchOutput
@@ -54,6 +58,10 @@ from ibd_agents.schemas.value_investor_output import ValueInvestorOutput
 from ibd_agents.schemas.pattern_output import PortfolioPatternOutput
 from ibd_agents.schemas.historical_output import HistoricalAnalysisOutput
 from ibd_agents.schemas.target_return_output import TargetReturnOutput
+from ibd_agents.schemas.exit_strategy_output import ExitStrategyOutput
+from ibd_agents.schemas.regime_detector_output import RegimeDetectorOutput
+from ibd_agents.schemas.earnings_risk_output import EarningsRiskOutput
+from ibd_agents.tools.token_tracker import tracker as token_tracker
 
 
 # ---------------------------------------------------------------------------
@@ -83,6 +91,9 @@ AGENT_REGISTRY: dict[int, AgentSpec] = {
     12: AgentSpec(12, "pattern",     PortfolioPatternOutput,    "agent12_pattern.json"),
     13: AgentSpec(13, "historical",  HistoricalAnalysisOutput,  "agent13_historical.json"),
     14: AgentSpec(14, "target_return", TargetReturnOutput,      "agent14_target_return.json"),
+    15: AgentSpec(15, "exit_strategy", ExitStrategyOutput,      "agent15_exit_strategy.json"),
+    16: AgentSpec(16, "regime_detector", RegimeDetectorOutput,  "agent16_regime_detector.json"),
+    17: AgentSpec(17, "earnings_risk", EarningsRiskOutput,      "agent17_earnings_risk.json"),
 }
 
 
@@ -147,8 +158,8 @@ examples:
     )
     parser.add_argument(
         "--from", dest="start_from", type=int, default=1,
-        choices=range(1, 15), metavar="N",
-        help="Start from agent N, loading agents 1..N-1 from snapshots (1-14, default: 1)",
+        choices=range(1, 18), metavar="N",
+        help="Start from agent N, loading agents 1..N-1 from snapshots (1-16, default: 1)",
     )
     parser.add_argument(
         "--historical", action="store_true", default=False,
@@ -1173,6 +1184,391 @@ def _write_risk_excel(risk_output, out_path: Path) -> Path:
     return filepath
 
 
+def _write_regime_detector_excel(regime_output, out_path: Path) -> Path:
+    """Write Agent 16 Regime Detector output to its own Excel file."""
+    today = date.today().isoformat()
+    filepath = out_path / f"agent16_regime_detector_{today}.xlsx"
+
+    # --- Regime Summary ---
+    summary_rows = [
+        {"Field": "Analysis Date", "Value": regime_output.analysis_date},
+        {"Field": "Market Regime", "Value": regime_output.regime.value},
+        {"Field": "Legacy Regime", "Value": regime_output.to_legacy_regime()},
+        {"Field": "Confidence", "Value": regime_output.confidence.value},
+        {"Field": "Market Health Score", "Value": f"{regime_output.market_health_score}/10"},
+        {"Field": "Exposure Recommendation", "Value": f"{regime_output.exposure_recommendation}%"},
+        {"Field": "", "Value": ""},
+        {"Field": "Bullish Signals", "Value": regime_output.bullish_signals},
+        {"Field": "Neutral Signals", "Value": regime_output.neutral_signals},
+        {"Field": "Bearish Signals", "Value": regime_output.bearish_signals},
+        {"Field": "", "Value": ""},
+        {"Field": "Executive Summary", "Value": regime_output.executive_summary},
+    ]
+    if regime_output.regime_change:
+        rc = regime_output.regime_change
+        summary_rows.extend([
+            {"Field": "", "Value": ""},
+            {"Field": "--- Regime Change ---", "Value": ""},
+            {"Field": "Changed", "Value": str(rc.changed)},
+            {"Field": "Previous", "Value": rc.previous},
+            {"Field": "Current", "Value": rc.current},
+            {"Field": "Trigger", "Value": rc.trigger or "N/A"},
+        ])
+    df_summary = pd.DataFrame(summary_rows)
+
+    # --- Indicator Assessments ---
+    assessment_rows = []
+
+    # Distribution days
+    dist = regime_output.distribution_days
+    assessment_rows.append({
+        "Indicator": "Distribution Days",
+        "Signal": dist.signal.value,
+        "Detail": dist.detail,
+        "SP500 Count": dist.sp500_count,
+        "Nasdaq Count": dist.nasdaq_count,
+        "SP500 Direction": dist.sp500_direction.value,
+        "Nasdaq Direction": dist.nasdaq_direction.value,
+    })
+
+    # Breadth
+    b = regime_output.breadth
+    assessment_rows.append({
+        "Indicator": "Market Breadth",
+        "Signal": b.signal.value,
+        "Detail": f"200MA: {b.pct_above_200ma}%, 50MA: {b.pct_above_50ma}%, "
+                  f"Highs/Lows: {b.new_highs}/{b.new_lows}",
+        "SP500 Count": "",
+        "Nasdaq Count": "",
+        "SP500 Direction": b.advance_decline_direction.value,
+        "Nasdaq Direction": "",
+    })
+
+    # Leaders
+    ldr = regime_output.leaders
+    assessment_rows.append({
+        "Indicator": "Leading Stocks",
+        "Signal": ldr.signal.value,
+        "Detail": f"RS90 above 50MA: {ldr.rs90_above_50ma_pct}%, "
+                  f"Health: {ldr.health.value}, Highs/Lows: {ldr.rs90_new_highs}/{ldr.rs90_new_lows}",
+        "SP500 Count": "",
+        "Nasdaq Count": "",
+        "SP500 Direction": "",
+        "Nasdaq Direction": "",
+    })
+
+    # Sectors
+    sec = regime_output.sectors
+    assessment_rows.append({
+        "Indicator": "Sector Rotation",
+        "Signal": sec.signal.value,
+        "Detail": f"Character: {sec.character.value}, "
+                  f"Defensive in top 5: {sec.defensive_in_top_5}, "
+                  f"Top: {', '.join(sec.top_5_sectors[:3])}",
+        "SP500 Count": "",
+        "Nasdaq Count": "",
+        "SP500 Direction": "",
+        "Nasdaq Direction": "",
+    })
+
+    # FTD
+    ftd = regime_output.follow_through_day
+    if ftd.detected:
+        ftd_signal = "BULLISH" if ftd.quality.value in ("STRONG", "MODERATE") else "NEUTRAL"
+        ftd_detail = (f"Quality: {ftd.quality.value}, "
+                      f"Index: {ftd.index or 'N/A'}, Gain: {ftd.gain_pct or 0:.2f}%, "
+                      f"Day {ftd.rally_day_number or 'N/A'}")
+    else:
+        ftd_signal = "NEUTRAL"
+        ftd_detail = "No Follow-Through Day detected"
+    assessment_rows.append({
+        "Indicator": "Follow-Through Day",
+        "Signal": ftd_signal,
+        "Detail": ftd_detail,
+        "SP500 Count": "",
+        "Nasdaq Count": "",
+        "SP500 Direction": "",
+        "Nasdaq Direction": "",
+    })
+
+    df_assessments = pd.DataFrame(assessment_rows)
+
+    # --- Transition Conditions ---
+    trans_rows = []
+    for tc in regime_output.transition_conditions:
+        trans_rows.append({
+            "Direction": tc.direction,
+            "Target Regime": tc.target_regime,
+            "Condition": tc.condition,
+            "Likelihood": tc.likelihood or "N/A",
+        })
+    df_transitions = pd.DataFrame(trans_rows)
+
+    # --- Write ---
+    with pd.ExcelWriter(filepath, engine="openpyxl") as writer:
+        df_summary.to_excel(writer, sheet_name="Regime Summary", index=False)
+        df_assessments.to_excel(writer, sheet_name="Indicator Assessments", index=False)
+        if not df_transitions.empty:
+            df_transitions.to_excel(writer, sheet_name="Transition Conditions", index=False)
+
+        # Color-code regime in summary
+        ws = writer.sheets["Regime Summary"]
+        regime_fills = {
+            "CONFIRMED_UPTREND": PatternFill(start_color="228B22", end_color="228B22", fill_type="solid"),
+            "UPTREND_UNDER_PRESSURE": PatternFill(start_color="FFA500", end_color="FFA500", fill_type="solid"),
+            "FOLLOW_THROUGH_DAY": PatternFill(start_color="87CEEB", end_color="87CEEB", fill_type="solid"),
+            "RALLY_ATTEMPT": PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid"),
+            "CORRECTION": PatternFill(start_color="FF4444", end_color="FF4444", fill_type="solid"),
+        }
+        # Color the regime value cell (row 2, column B)
+        regime_cell = ws.cell(row=2, column=2)
+        fill = regime_fills.get(regime_cell.value)
+        if fill:
+            regime_cell.fill = fill
+            regime_cell.font = Font(bold=True, color="FFFFFF" if regime_cell.value in ("CONFIRMED_UPTREND", "CORRECTION") else "000000")
+
+        # Color-code signal cells in assessments
+        ws_assess = writer.sheets["Indicator Assessments"]
+        signal_fills = {
+            "BULLISH": PatternFill(start_color="90EE90", end_color="90EE90", fill_type="solid"),
+            "NEUTRAL": PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid"),
+            "BEARISH": PatternFill(start_color="FF6B6B", end_color="FF6B6B", fill_type="solid"),
+        }
+        signal_col = 2  # Column B = Signal (1-indexed)
+        for row_idx in range(2, ws_assess.max_row + 1):
+            cell = ws_assess.cell(row=row_idx, column=signal_col)
+            fill = signal_fills.get(cell.value)
+            if fill:
+                cell.fill = fill
+
+    return filepath
+
+
+def _write_exit_strategy_excel(exit_output, out_path: Path) -> Path:
+    """Write Agent 15 Exit Strategist output to its own Excel file."""
+    today = date.today().isoformat()
+    filepath = out_path / f"agent15_exit_strategy_{today}.xlsx"
+
+    # --- Summary ---
+    impact = exit_output.portfolio_impact
+    summary_rows = [
+        {"Field": "Analysis Date", "Value": exit_output.analysis_date},
+        {"Field": "Market Regime", "Value": exit_output.market_regime.value},
+        {"Field": "Portfolio Health Score", "Value": f"{exit_output.portfolio_health_score}/10"},
+        {"Field": "Total Signals", "Value": len(exit_output.signals)},
+        {"Field": "Critical", "Value": impact.positions_critical},
+        {"Field": "Warning", "Value": impact.positions_warning},
+        {"Field": "Watch", "Value": impact.positions_watch},
+        {"Field": "Healthy", "Value": impact.positions_healthy},
+        {"Field": "", "Value": ""},
+        {"Field": "Current Cash %", "Value": f"{impact.current_cash_pct:.1f}%"},
+        {"Field": "Projected Cash %", "Value": f"{impact.projected_cash_pct:.1f}%"},
+        {"Field": "Sector Concentration Risk", "Value": impact.sector_concentration_risk},
+        {"Field": "Reasoning Source", "Value": exit_output.reasoning_source or "N/A"},
+        {"Field": "", "Value": ""},
+        {"Field": "Summary", "Value": exit_output.summary},
+    ]
+    df_summary = pd.DataFrame(summary_rows)
+
+    # --- Signals ---
+    signal_rows = []
+    for s in exit_output.signals:
+        signal_rows.append({
+            "Symbol": s.symbol,
+            "Tier": s.tier,
+            "Type": s.asset_type,
+            "Urgency": s.urgency.value,
+            "Action": s.action.value,
+            "Sell Type": s.sell_type.value,
+            "Sell %": f"{s.sell_pct:.0f}%" if s.sell_pct is not None else "",
+            "Gain/Loss %": f"{s.gain_loss_pct:+.1f}%",
+            "Current Price": f"${s.current_price:.2f}",
+            "Buy Price": f"${s.buy_price:.2f}",
+            "Stop Price": f"${s.stop_price:.2f}",
+            "Days Held": s.days_held,
+            "Rules Triggered": ", ".join(r.value for r in s.rules_triggered),
+            "Reasoning": s.reasoning,
+        })
+    df_signals = pd.DataFrame(signal_rows)
+
+    # --- Evidence ---
+    evidence_rows = []
+    for s in exit_output.signals:
+        for e in s.evidence:
+            evidence_rows.append({
+                "Symbol": s.symbol,
+                "Rule": e.rule_triggered.value,
+                "Rule ID": e.rule_id,
+                "Data Point": e.data_point,
+            })
+    df_evidence = pd.DataFrame(evidence_rows)
+
+    # --- Portfolio Impact ---
+    impact_rows = [
+        {"Metric": "Current Cash %", "Value": f"{impact.current_cash_pct:.1f}%"},
+        {"Metric": "Projected Cash %", "Value": f"{impact.projected_cash_pct:.1f}%"},
+        {"Metric": "Current Top Holding %", "Value": f"{impact.current_top_holding_pct:.1f}%"},
+        {"Metric": "Projected Top Holding %", "Value": f"{impact.projected_top_holding_pct:.1f}%"},
+        {"Metric": "Positions Healthy", "Value": impact.positions_healthy},
+        {"Metric": "Positions Watch", "Value": impact.positions_watch},
+        {"Metric": "Positions Warning", "Value": impact.positions_warning},
+        {"Metric": "Positions Critical", "Value": impact.positions_critical},
+        {"Metric": "Sector Concentration Risk", "Value": impact.sector_concentration_risk},
+    ]
+    df_impact = pd.DataFrame(impact_rows)
+
+    # --- Rules Summary ---
+    from ibd_agents.schemas.exit_strategy_output import SELL_RULE_NAMES, RULE_ID_MAP
+    rules_rows = []
+    for rule_name in SELL_RULE_NAMES:
+        triggered_count = sum(
+            1 for s in exit_output.signals
+            for r in s.rules_triggered if r.value == rule_name
+        )
+        rules_rows.append({
+            "Rule": rule_name,
+            "Rule ID": RULE_ID_MAP.get(rule_name, ""),
+            "Triggered Count": triggered_count,
+        })
+    df_rules = pd.DataFrame(rules_rows)
+
+    # --- Write ---
+    with pd.ExcelWriter(filepath, engine="openpyxl") as writer:
+        df_summary.to_excel(writer, sheet_name="Summary", index=False)
+        df_signals.to_excel(writer, sheet_name="Signals", index=False)
+        if not df_evidence.empty:
+            df_evidence.to_excel(writer, sheet_name="Evidence", index=False)
+        df_impact.to_excel(writer, sheet_name="Portfolio Impact", index=False)
+        df_rules.to_excel(writer, sheet_name="Rules Summary", index=False)
+
+        # Color-code signals by urgency
+        ws = writer.sheets["Signals"]
+        urgency_fills = {
+            "CRITICAL": PatternFill(start_color="FF4444", end_color="FF4444", fill_type="solid"),
+            "WARNING": PatternFill(start_color="FFA500", end_color="FFA500", fill_type="solid"),
+            "WATCH": PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid"),
+            "HEALTHY": PatternFill(start_color="90EE90", end_color="90EE90", fill_type="solid"),
+        }
+        urgency_col = 4  # Column D = Urgency (1-indexed)
+        for row_idx in range(2, ws.max_row + 1):
+            cell = ws.cell(row=row_idx, column=urgency_col)
+            fill = urgency_fills.get(cell.value)
+            if fill:
+                cell.fill = fill
+
+    return filepath
+
+
+def _write_earnings_risk_excel(earnings_output, out_path: Path) -> Path:
+    """Write Agent 17 Earnings Risk Analyst output to its own Excel file."""
+    today = date.today().isoformat()
+    filepath = out_path / f"agent17_earnings_risk_{today}.xlsx"
+
+    # --- Summary ---
+    conc = earnings_output.concentration
+    summary_rows = [
+        {"Field": "Analysis Date", "Value": earnings_output.analysis_date},
+        {"Field": "Market Regime", "Value": earnings_output.market_regime},
+        {"Field": "Lookforward Days", "Value": earnings_output.lookforward_days},
+        {"Field": "Data Source", "Value": earnings_output.data_source or "N/A"},
+        {"Field": "", "Value": ""},
+        {"Field": "Positions with Earnings", "Value": len(earnings_output.analyses)},
+        {"Field": "Positions Clear", "Value": len(earnings_output.positions_clear)},
+        {"Field": "Concentration Risk", "Value": conc.concentration_risk},
+        {"Field": "Portfolio % Exposed", "Value": f"{conc.total_portfolio_pct_exposed:.1f}%"},
+        {"Field": "", "Value": ""},
+        {"Field": "Executive Summary", "Value": earnings_output.executive_summary},
+    ]
+    df_summary = pd.DataFrame(summary_rows)
+
+    # --- Analyses ---
+    analysis_rows = []
+    for a in earnings_output.analyses:
+        analysis_rows.append({
+            "Ticker": a.ticker,
+            "Account": a.account,
+            "Earnings Date": a.earnings_date,
+            "Days Until": a.days_until_earnings,
+            "Reporting Time": a.reporting_time,
+            "Shares": a.shares,
+            "Price": f"${a.current_price:.2f}",
+            "Buy Price": f"${a.buy_price:.2f}",
+            "Gain/Loss %": f"{a.gain_loss_pct:+.1f}%",
+            "Position Value": f"${a.position_value:,.0f}",
+            "Portfolio %": f"{a.portfolio_pct:.1f}%",
+            "Cushion Ratio": f"{a.cushion_ratio:.2f}",
+            "Cushion Cat.": a.cushion_category.value,
+            "Risk Level": a.risk_level.value,
+            "Beat Rate": f"{a.historical.beat_rate_pct:.0f}%",
+            "Avg Move %": f"{a.historical.avg_move_pct:.1f}%",
+            "Worst Move %": f"{a.historical.max_adverse_move_pct:.1f}%",
+            "Estimate Rev.": a.estimate_revision.value,
+            "Recommended": a.recommended_strategy.value,
+            "Rationale": a.recommendation_rationale,
+        })
+    df_analyses = pd.DataFrame(analysis_rows)
+
+    # --- Strategies ---
+    strat_rows = []
+    for a in earnings_output.analyses:
+        for s in a.strategies:
+            for sc in s.scenarios:
+                strat_rows.append({
+                    "Ticker": a.ticker,
+                    "Strategy": s.strategy.value,
+                    "Description": s.description,
+                    "Shares to Sell": s.shares_to_sell or "",
+                    "Hedge Cost": f"${s.estimated_hedge_cost:,.0f}" if s.estimated_hedge_cost else "",
+                    "Scenario": sc.scenario,
+                    "Move %": f"{sc.expected_move_pct:+.1f}%",
+                    "Result G/L %": f"{sc.resulting_gain_loss_pct:+.1f}%",
+                    "$ Impact": f"${sc.dollar_impact:+,.0f}",
+                    "Math": sc.math,
+                    "Risk/Reward": s.risk_reward_summary,
+                })
+    df_strategies = pd.DataFrame(strat_rows)
+
+    # --- Concentration ---
+    conc_rows = []
+    for week in conc.earnings_calendar:
+        conc_rows.append({
+            "Week": week.week_label,
+            "Week Start": week.week_start,
+            "Positions": ", ".join(week.positions_reporting),
+            "Portfolio %": f"{week.aggregate_portfolio_pct:.1f}%",
+            "Flag": week.concentration_flag or "",
+        })
+    df_concentration = pd.DataFrame(conc_rows)
+
+    # --- Write ---
+    with pd.ExcelWriter(filepath, engine="openpyxl") as writer:
+        df_summary.to_excel(writer, sheet_name="Summary", index=False)
+        if not df_analyses.empty:
+            df_analyses.to_excel(writer, sheet_name="Analyses", index=False)
+        if not df_strategies.empty:
+            df_strategies.to_excel(writer, sheet_name="Strategies", index=False)
+        if not df_concentration.empty:
+            df_concentration.to_excel(writer, sheet_name="Concentration", index=False)
+
+        # Color-code analyses by risk level
+        if not df_analyses.empty:
+            ws = writer.sheets["Analyses"]
+            risk_fills = {
+                "CRITICAL": PatternFill(start_color="FF4444", end_color="FF4444", fill_type="solid"),
+                "HIGH": PatternFill(start_color="FFA500", end_color="FFA500", fill_type="solid"),
+                "MODERATE": PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid"),
+                "LOW": PatternFill(start_color="90EE90", end_color="90EE90", fill_type="solid"),
+            }
+            risk_col = 14  # Column N = Risk Level (1-indexed)
+            for row_idx in range(2, ws.max_row + 1):
+                cell = ws.cell(row=row_idx, column=risk_col)
+                fill = risk_fills.get(cell.value)
+                if fill:
+                    cell.fill = fill
+
+    return filepath
+
+
 def _write_returns_projector_excel(returns_output, out_path: Path) -> Path:
     """Write Agent 07 Returns Projector output to its own Excel file."""
     today = date.today().isoformat()
@@ -2081,6 +2477,135 @@ def _write_target_return_excel(target_return_output, out_path: Path) -> Path:
     return filepath
 
 
+# ---------------------------------------------------------------------------
+# Token Usage Excel Writer
+# ---------------------------------------------------------------------------
+
+def _write_token_usage_excel(output_dir: Path) -> str | None:
+    """Write token usage report to Excel if any LLM calls were tracked."""
+    from ibd_agents.tools.token_tracker import _compute_cost
+
+    if not token_tracker.has_records:
+        return None
+
+    filepath = str(output_dir / "token_usage.xlsx")
+    summary = token_tracker.get_summary()
+    by_agent = token_tracker.get_by_agent()
+    by_function = token_tracker.get_by_function()
+
+    header_font = Font(bold=True)
+    header_fill = PatternFill(start_color="B8CCE4", end_color="B8CCE4", fill_type="solid")
+
+    with pd.ExcelWriter(filepath, engine="openpyxl") as writer:
+        # --- Sheet 1: Summary ---
+        summary_data = [
+            {"Metric": "Total Input Tokens", "Value": f"{summary['total_input_tokens']:,}"},
+            {"Metric": "Total Output Tokens", "Value": f"{summary['total_output_tokens']:,}"},
+            {"Metric": "Total Tokens", "Value": f"{summary['total_tokens']:,}"},
+            {"Metric": "Estimated Cost ($)", "Value": f"${summary['estimated_cost_usd']:.4f}"},
+            {"Metric": "Number of LLM Calls", "Value": str(summary["num_calls"])},
+            {"Metric": "Model", "Value": "claude-haiku-3.5"},
+            {"Metric": "Pipeline Run Date", "Value": str(date.today())},
+        ]
+        df_summary = pd.DataFrame(summary_data)
+        df_summary.to_excel(writer, sheet_name="Summary", index=False)
+        ws = writer.sheets["Summary"]
+        for cell in ws[1]:
+            cell.font = header_font
+            cell.fill = header_fill
+        ws.column_dimensions["A"].width = 25
+        ws.column_dimensions["B"].width = 25
+
+        # --- Sheet 2: By Agent ---
+        agent_rows = []
+        for a in by_agent:
+            agent_rows.append({
+                "Agent": a["agent_id"],
+                "Name": a["agent_name"],
+                "Input Tokens": a["input_tokens"],
+                "Output Tokens": a["output_tokens"],
+                "Total Tokens": a["total_tokens"],
+                "Cost ($)": a["cost_usd"],
+                "Calls": a["calls"],
+            })
+        # Totals row
+        agent_rows.append({
+            "Agent": "TOTAL",
+            "Name": "",
+            "Input Tokens": summary["total_input_tokens"],
+            "Output Tokens": summary["total_output_tokens"],
+            "Total Tokens": summary["total_tokens"],
+            "Cost ($)": summary["estimated_cost_usd"],
+            "Calls": summary["num_calls"],
+        })
+        df_agent = pd.DataFrame(agent_rows)
+        df_agent.to_excel(writer, sheet_name="By Agent", index=False)
+        ws = writer.sheets["By Agent"]
+        for cell in ws[1]:
+            cell.font = header_font
+            cell.fill = header_fill
+        # Bold totals row
+        total_row = len(agent_rows) + 1
+        for cell in ws[total_row]:
+            cell.font = Font(bold=True)
+        # Format number columns
+        from openpyxl.utils import get_column_letter
+        for col_idx in [3, 4, 5, 7]:  # Input, Output, Total, Calls
+            for row in range(2, total_row + 1):
+                cell = ws.cell(row=row, column=col_idx)
+                cell.number_format = "#,##0"
+        for row in range(2, total_row + 1):
+            ws.cell(row=row, column=6).number_format = "$#,##0.0000"
+        for col in ws.columns:
+            max_len = max(len(str(c.value or "")) for c in col)
+            ws.column_dimensions[col[0].column_letter].width = min(max_len + 3, 25)
+
+        # --- Sheet 3: By Function ---
+        func_rows = []
+        for f in by_function:
+            func_rows.append({
+                "Function": f["function"],
+                "Agent": f["agent_id"],
+                "Name": f["agent_name"],
+                "Input Tokens": f["input_tokens"],
+                "Output Tokens": f["output_tokens"],
+                "Total Tokens": f["total_tokens"],
+                "Cost ($)": f["cost_usd"],
+                "Calls": f["calls"],
+            })
+        # Totals row
+        func_rows.append({
+            "Function": "TOTAL",
+            "Agent": "",
+            "Name": "",
+            "Input Tokens": summary["total_input_tokens"],
+            "Output Tokens": summary["total_output_tokens"],
+            "Total Tokens": summary["total_tokens"],
+            "Cost ($)": summary["estimated_cost_usd"],
+            "Calls": summary["num_calls"],
+        })
+        df_func = pd.DataFrame(func_rows)
+        df_func.to_excel(writer, sheet_name="By Function", index=False)
+        ws = writer.sheets["By Function"]
+        for cell in ws[1]:
+            cell.font = header_font
+            cell.fill = header_fill
+        total_row = len(func_rows) + 1
+        for cell in ws[total_row]:
+            cell.font = Font(bold=True)
+        for col_idx in [4, 5, 6, 8]:  # Input, Output, Total, Calls
+            for row in range(2, total_row + 1):
+                cell = ws.cell(row=row, column=col_idx)
+                cell.number_format = "#,##0"
+        for row in range(2, total_row + 1):
+            ws.cell(row=row, column=7).number_format = "$#,##0.0000"
+        for col in ws.columns:
+            max_len = max(len(str(c.value or "")) for c in col)
+            ws.column_dimensions[col[0].column_letter].width = min(max_len + 3, 40)
+
+    return filepath
+
+
 def main(data_dir: str = "data", output_dir: str = "output",
          start_from: int = 1, run_historical: bool = False):
     out_path = Path(output_dir)
@@ -2096,6 +2621,14 @@ def main(data_dir: str = "data", output_dir: str = "output",
         # Agent 14 runs after Agent 07. When resuming from Agent 08+,
         # load 14 from snapshot (unless specifically targeting 14).
         if agent_num == 14 and start_from > 7 and start_from != 14:
+            return False
+        # Agent 16 runs after Agent 02. When resuming from Agent 03+,
+        # load 16 from snapshot (unless specifically targeting 16).
+        if agent_num == 16 and start_from > 2 and start_from != 16:
+            return False
+        # Agent 17 runs after Agent 15. When resuming from Agent 08+,
+        # load 17 from snapshot (unless specifically targeting 17).
+        if agent_num == 17 and start_from > 7 and start_from != 17:
             return False
         return agent_num >= start_from
 
@@ -2126,6 +2659,59 @@ def main(data_dir: str = "data", output_dir: str = "output",
         print(f"[Agent 02] Saved: {analyst_file}")
     else:
         analyst_output = _load_snapshot(2, snapshots_dir)
+
+    # ===== PHASE 2b: Regime Detector =====
+    regime_output = None
+    if should_run(16):
+        print(f"[Agent 16] Running Regime Detector pipeline ...")
+        regime_output = run_regime_detector_pipeline(
+            analyst_output=analyst_output,
+            use_real_data=False,
+        )
+        legacy = regime_output.to_legacy_regime()
+        print(f"[Agent 16] Done — regime={regime_output.regime.value}, "
+              f"confidence={regime_output.confidence.value}, "
+              f"health={regime_output.market_health_score}/10, "
+              f"exposure={regime_output.exposure_recommendation}%, "
+              f"legacy={legacy}")
+        _save_snapshot(regime_output, 16, snapshots_dir)
+        regime_file = _write_regime_detector_excel(regime_output, out_path)
+        print(f"[Agent 16] Saved: {regime_file}")
+    elif start_from > 2:
+        try:
+            regime_output = _load_snapshot(16, snapshots_dir)
+        except SystemExit:
+            print(f"  [snapshot] Agent 16 snapshot not found — skipping regime detector output")
+            regime_output = None
+
+    # ===== PHASE 2a: Historical Analyst (opt-in, runs early for momentum data) =====
+    historical_output = None
+    if run_historical:
+        if should_run(13):
+            print(f"[Agent 13] Running Historical Analyst pipeline ...")
+            try:
+                from ibd_agents.tools.historical_store import ingest_directory
+                for ingest_dir in ["data/ibd_pdf", "data/ibd_xls", "data/ibd_history"]:
+                    if Path(ingest_dir).exists():
+                        ingest_result = ingest_directory(ingest_dir)
+                        if ingest_result.get("total_stocks_added", 0) > 0:
+                            print(f"[Agent 13] Ingested {ingest_result['total_stocks_added']} "
+                                  f"stocks from {ingest_dir}/")
+
+                historical_output = run_historical_pipeline(analyst_output)
+                _save_snapshot(historical_output, 13, snapshots_dir)
+                print(f"[Agent 13] Done — source={historical_output.historical_source}, "
+                      f"{len(historical_output.stock_analyses)} stocks analyzed, "
+                      f"{len(historical_output.improving_stocks)} improving, "
+                      f"{len(historical_output.deteriorating_stocks)} deteriorating, "
+                      f"{len(historical_output.historical_analogs)} analogs")
+            except Exception as e:
+                print(f"[Agent 13] Warning: Historical analysis failed: {e}")
+                print(f"[Agent 13] Install chromadb to enable historical context analysis")
+        else:
+            historical_output = _load_snapshot(13, snapshots_dir)
+    else:
+        print(f"[Agent 13] Skipped (use --historical to enable)")
 
     # ===== PHASE 3: Rotation Detector =====
     if should_run(3):
@@ -2197,6 +2783,7 @@ def main(data_dir: str = "data", output_dir: str = "output",
         portfolio_output = run_portfolio_pipeline(
             strategy_output, analyst_output,
             value_output=value_output, pattern_output=pattern_output,
+            historical_output=historical_output,
         )
         print(f"[Agent 05] Done — {portfolio_output.total_positions} positions, "
               f"{portfolio_output.stock_count} stocks, {portfolio_output.etf_count} ETFs, "
@@ -2210,7 +2797,7 @@ def main(data_dir: str = "data", output_dir: str = "output",
     # ===== PHASE 6: Risk Officer =====
     if should_run(6):
         print(f"[Agent 06] Running Risk Officer pipeline ...")
-        risk_output = run_risk_pipeline(portfolio_output, strategy_output, analyst_output=analyst_output)
+        risk_output = run_risk_pipeline(portfolio_output, strategy_output, analyst_output=analyst_output, pattern_output=pattern_output)
         print(f"[Agent 06] Done — {risk_output.overall_status}, "
               f"Sleep Well: {risk_output.sleep_well_scores.overall_score}/10, "
               f"{len(risk_output.vetoes)} vetoes, {len(risk_output.warnings)} warnings")
@@ -2219,6 +2806,80 @@ def main(data_dir: str = "data", output_dir: str = "output",
         print(f"[Agent 06] Saved: {risk_file}")
     else:
         risk_output = _load_snapshot(6, snapshots_dir)
+
+    # ===== PHASE 15: Exit Strategist =====
+    exit_strategy_output = None
+    if should_run(15):
+        # Read actual brokerage holdings for exit signal evaluation
+        brokerage_holdings = None
+        try:
+            brokerage_holdings = read_brokerage_pdfs("data/portfolios")
+            print(f"[Agent 15] Loaded {len(brokerage_holdings.holdings)} brokerage positions "
+                  f"from {brokerage_holdings.account_count} accounts")
+        except Exception as e:
+            print(f"[Agent 15] No brokerage PDFs loaded ({e}) — using model portfolio only")
+
+        print(f"[Agent 15] Running Exit Strategist pipeline ...")
+        exit_strategy_output = run_exit_strategist_pipeline(
+            portfolio_output, risk_output, strategy_output, analyst_output, rotation_output,
+            brokerage_holdings=brokerage_holdings,
+        )
+        n_crit = sum(1 for s in exit_strategy_output.signals if s.urgency.value == "CRITICAL")
+        n_warn = sum(1 for s in exit_strategy_output.signals if s.urgency.value == "WARNING")
+        n_healthy = sum(1 for s in exit_strategy_output.signals if s.urgency.value == "HEALTHY")
+        print(f"[Agent 15] Done — {len(exit_strategy_output.signals)} signals, "
+              f"health={exit_strategy_output.portfolio_health_score}/10, "
+              f"{n_crit} critical, {n_warn} warning, {n_healthy} healthy")
+        _save_snapshot(exit_strategy_output, 15, snapshots_dir)
+        exit_file = _write_exit_strategy_excel(exit_strategy_output, out_path)
+        print(f"[Agent 15] Saved: {exit_file}")
+    elif start_from > 6:
+        try:
+            exit_strategy_output = _load_snapshot(15, snapshots_dir)
+        except SystemExit:
+            print(f"  [snapshot] Agent 15 snapshot not found — skipping exit strategy output")
+            exit_strategy_output = None
+
+    # ===== PHASE 17: Earnings Risk Analyst =====
+    earnings_risk_output = None
+    if should_run(17):
+        # Re-use brokerage_holdings from Agent 15 (or load fresh)
+        try:
+            brokerage_holdings  # noqa: F841 — check if defined
+        except NameError:
+            brokerage_holdings = None
+        if brokerage_holdings is None:
+            try:
+                brokerage_holdings = read_brokerage_pdfs("data/portfolios")
+                print(f"[Agent 17] Loaded {len(brokerage_holdings.holdings)} brokerage positions "
+                      f"from {brokerage_holdings.account_count} accounts")
+            except Exception as e:
+                print(f"[Agent 17] No brokerage PDFs loaded ({e}) — using model portfolio only")
+
+        print(f"[Agent 17] Running Earnings Risk Analyst pipeline ...")
+        earnings_risk_output = run_earnings_risk_pipeline(
+            portfolio_output,
+            regime_output=regime_output,
+            analyst_output=analyst_output,
+            brokerage_holdings=brokerage_holdings,
+        )
+        n_crit = sum(1 for a in earnings_risk_output.analyses if a.risk_level.value == "CRITICAL")
+        n_high = sum(1 for a in earnings_risk_output.analyses if a.risk_level.value == "HIGH")
+        n_mod = sum(1 for a in earnings_risk_output.analyses if a.risk_level.value == "MODERATE")
+        n_low = sum(1 for a in earnings_risk_output.analyses if a.risk_level.value == "LOW")
+        print(f"[Agent 17] Done — {len(earnings_risk_output.analyses)} positions with earnings, "
+              f"{len(earnings_risk_output.positions_clear)} clear, "
+              f"{n_crit} critical, {n_high} high, {n_mod} moderate, {n_low} low, "
+              f"concentration={earnings_risk_output.concentration.concentration_risk}")
+        _save_snapshot(earnings_risk_output, 17, snapshots_dir)
+        earnings_risk_file = _write_earnings_risk_excel(earnings_risk_output, out_path)
+        print(f"[Agent 17] Saved: {earnings_risk_file}")
+    elif start_from > 7:
+        try:
+            earnings_risk_output = _load_snapshot(17, snapshots_dir)
+        except SystemExit:
+            print(f"  [snapshot] Agent 17 snapshot not found — skipping earnings risk output")
+            earnings_risk_output = None
 
     # ===== PHASE 7: Returns Projector =====
     if should_run(7):
@@ -2307,32 +2968,6 @@ def main(data_dir: str = "data", output_dir: str = "output",
     else:
         synthesis_output = _load_snapshot(10, snapshots_dir)
 
-    # ===== PHASE 13: Historical Analyst (RAG, opt-in) =====
-    historical_output = None
-    if run_historical:
-        print(f"[Agent 13] Running Historical Analyst pipeline ...")
-        try:
-            from ibd_agents.tools.historical_store import ingest_directory
-            for ingest_dir in ["data/ibd_pdf", "data/ibd_xls", "data/ibd_history"]:
-                if Path(ingest_dir).exists():
-                    ingest_result = ingest_directory(ingest_dir)
-                    if ingest_result.get("total_stocks_added", 0) > 0:
-                        print(f"[Agent 13] Ingested {ingest_result['total_stocks_added']} "
-                              f"stocks from {ingest_dir}/")
-
-            historical_output = run_historical_pipeline(analyst_output)
-            _save_snapshot(historical_output, 13, snapshots_dir)
-            print(f"[Agent 13] Done — source={historical_output.historical_source}, "
-                  f"{len(historical_output.stock_analyses)} stocks analyzed, "
-                  f"{len(historical_output.improving_stocks)} improving, "
-                  f"{len(historical_output.deteriorating_stocks)} deteriorating, "
-                  f"{len(historical_output.historical_analogs)} analogs")
-        except Exception as e:
-            print(f"[Agent 13] Warning: Historical analysis failed: {e}")
-            print(f"[Agent 13] Install chromadb to enable historical context analysis")
-    else:
-        print(f"[Agent 13] Skipped (use --historical to enable)")
-
     # ===== PDF Summary Report =====
     print(f"\n[PDF] Generating summary report ...")
     try:
@@ -2348,6 +2983,15 @@ def main(data_dir: str = "data", output_dir: str = "output",
     except Exception as e:
         print(f"[PDF] Warning: PDF generation failed: {e}")
         print(f"[PDF] Excel files are still available in {out_path}/")
+
+    # ===== Token Usage Report =====
+    token_file = _write_token_usage_excel(out_path)
+    if token_file:
+        summary = token_tracker.get_summary()
+        print(f"\n[Tokens] {summary['num_calls']} LLM calls, "
+              f"{summary['total_tokens']:,} tokens, "
+              f"${summary['estimated_cost_usd']:.4f}")
+        print(f"[Tokens] Saved: {token_file}")
 
     print(f"\nOutput directory: {out_path}/")
 

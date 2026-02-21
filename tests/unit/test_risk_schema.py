@@ -97,7 +97,7 @@ def _make_risk_assessment(**overrides) -> RiskAssessment:
         keep_validation=_make_keep_validation(),
         overall_status="APPROVED",
         analysis_date="2025-01-15",
-        summary="Risk Assessment: APPROVED. 10/10 checks passed. Sleep Well: 8/10. Portfolio within all framework limits.",
+        summary="Risk Assessment: APPROVED. 11/11 checks passed. Sleep Well: 8/10. Portfolio within all framework limits.",
     )
     defaults.update(overrides)
     return RiskAssessment(**defaults)
@@ -110,9 +110,9 @@ def _make_risk_assessment(**overrides) -> RiskAssessment:
 class TestConstants:
 
     @pytest.mark.schema
-    def test_10_check_names(self):
-        """Exactly 10 risk check names."""
-        assert len(CHECK_NAMES) == 10
+    def test_11_check_names(self):
+        """Exactly 11 risk check names."""
+        assert len(CHECK_NAMES) == 11
 
     @pytest.mark.schema
     def test_3_check_statuses(self):
@@ -264,7 +264,7 @@ class TestRiskAssessment:
     @pytest.mark.schema
     def test_missing_check_fails(self):
         """Missing a check name fails validation."""
-        incomplete = [_make_check(n) for n in CHECK_NAMES[:9]]
+        incomplete = [_make_check(n) for n in CHECK_NAMES[:10]]
         incomplete.append(_make_check(CHECK_NAMES[0]))  # Duplicate instead of last
         with pytest.raises(ValueError, match="Missing risk checks"):
             _make_risk_assessment(check_results=incomplete)
@@ -294,9 +294,9 @@ class TestRiskAssessment:
         assert len(ra.summary) >= 50
 
     @pytest.mark.schema
-    def test_exactly_10_checks(self):
+    def test_exactly_11_checks(self):
         ra = _make_risk_assessment()
-        assert len(ra.check_results) == 10
+        assert len(ra.check_results) == 11
 
 
 # ---------------------------------------------------------------------------

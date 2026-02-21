@@ -91,12 +91,13 @@ The system runs ten agents in sequence:
 8. **Agent 08: Portfolio Reconciler** — diffs current vs recommended holdings, generates KEEP/SELL/BUY/ADD/TRIM actions with 4-week implementation plan
 9. **Agent 09: Educator** — explains every decision from agents 01-08 in plain language with analogies and glossary
 10. **Agent 10: Executive Summary Synthesizer** — reads all 9 agent outputs, produces unified investment thesis with cross-agent connections, contradiction detection, key numbers dashboard, and action items; uses LLM (anthropic SDK) for narrative with deterministic template fallback
+16. **Agent 16: Regime Detector** — classifies market into 5 regimes (CONFIRMED_UPTREND, UPTREND_UNDER_PRESSURE, FOLLOW_THROUGH_DAY, RALLY_ATTEMPT, CORRECTION) using distribution days, market breadth, leading stock health, sector rotation, and follow-through day analysis. Runs after Agent 02. Backward-compatible via `to_legacy_regime()` → bull/neutral/bear.
 
 Each agent has two execution paths:
 1. **Deterministic pipeline** (`run_*_pipeline()`) — no LLM, used by tests
 2. **Agentic pipeline** (`build_*_agent()` + `build_*_task()`) — CrewAI agent with tools and LLM reasoning
 
-All paths produce validated Pydantic schemas (`ResearchOutput` / `AnalystOutput` / `RotationDetectionOutput` / `SectorStrategyOutput` / `PortfolioOutput` / `RiskAssessment` / `ReturnsProjectionOutput` / `ReconciliationOutput` / `EducatorOutput` / `SynthesisOutput`).
+All paths produce validated Pydantic schemas (`ResearchOutput` / `AnalystOutput` / `RotationDetectionOutput` / `SectorStrategyOutput` / `PortfolioOutput` / `RiskAssessment` / `ReturnsProjectionOutput` / `ReconciliationOutput` / `EducatorOutput` / `SynthesisOutput` / `RegimeDetectorOutput`).
 
 ### Source processing hierarchy (strict order)
 
@@ -127,6 +128,10 @@ All paths produce validated Pydantic schemas (`ResearchOutput` / `AnalystOutput`
 - `src/ibd_agents/agents/portfolio_reconciler.py` — Portfolio Reconciler builder and deterministic pipeline (`run_reconciler_pipeline()`).
 - `src/ibd_agents/agents/educator_agent.py` — Educator Agent builder and deterministic pipeline (`run_educator_pipeline()`).
 - `src/ibd_agents/agents/executive_synthesizer.py` — Executive Summary Synthesizer builder and deterministic pipeline (`run_synthesizer_pipeline()`). LLM narrative via anthropic SDK with template fallback.
+- `src/ibd_agents/schemas/regime_detector_output.py` — **Regime Detector output contract**. 5-state market regime classification. Constants (distribution day thresholds, FTD thresholds, exposure ranges, health score ranges), Enums (`MarketRegime5`, `PreviousRegime`, `Confidence`, `SignalDirection`, `Trend`, `LeaderHealth`, `SectorCharacter`, `FTDQuality`), Pydantic models (`DistributionDayAssessment`, `BreadthAssessment`, `LeaderAssessment`, `SectorAssessment`, `FollowThroughDayAssessment`, `TransitionCondition`, `RegimeChange`, `RegimeDetectorOutput`). Validators enforce exposure/health ranges per regime, signal counts sum to 5, FTD consistency, distribution day caps. `to_legacy_regime()` maps 5-state → 3-state.
+- `src/ibd_agents/agents/regime_detector.py` — Regime Detector builder and deterministic pipeline (`run_regime_detector_pipeline()`). Runs after Agent 02.
+- `src/ibd_agents/tools/regime_data_fetcher.py` — 5 data-fetching tools (distribution days, market breadth, leading stocks health, sector rankings, index price history). Mock implementations for 5 scenarios + real yfinance implementations. 5 CrewAI BaseTool wrappers.
+- `src/ibd_agents/tools/regime_classifier.py` — Pure classification functions: `classify_regime()` decision tree, assessment builders, FTD detection, exposure/health/confidence computation, transition conditions, executive summary generation.
 - `src/ibd_agents/tools/` — CrewAI tools, each with a pure function + BaseTool wrapper:
   - `xls_reader.py` — reads IBD Excel files via pandas (xlrd/openpyxl) and CSV files
   - `pdf_reader.py` — extracts from IBD and Motley Fool PDFs via pdfplumber
@@ -224,6 +229,12 @@ Each source label maps to points (defined in `VALIDATION_POINTS`). Multi-source 
 - **Synthesis**: investment_thesis ≥200 chars, portfolio_narrative/risk_reward/market_context ≥100 chars, ≥3 cross-agent connections, 3-5 action items, synthesis_source "llm" or "template"
 - **Contradiction detection**: sector concentration vs strategy allocation, bear regime vs offensive T1 weight >40%, risk not APPROVED vs optimistic returns >15%, fast rotation vs low turnover <30%
 - **Cross-agent connections**: rotation→strategy, strategy→portfolio, portfolio→risk, risk→returns, rotation→portfolio (5 mandatory connections)
+- **Regime Detector 5 regimes**: CONFIRMED_UPTREND (80-100% exposure), UPTREND_UNDER_PRESSURE (40-60%), FOLLOW_THROUGH_DAY (20-40%), RALLY_ATTEMPT (0-20%), CORRECTION (0%)
+- **Distribution days**: index down ≥0.2% on higher volume; expire after 25 sessions; power-up days (≥1% up on higher volume) remove oldest; 5+ caps at UPTREND_UNDER_PRESSURE; 6+ forces CORRECTION
+- **Follow-Through Day**: Day 4+ of rally, ≥1.25% gain, volume > prior day; quality STRONG (≥1.7%, Day 4-7, vol≥1.5x), MODERATE (Day 4-10), WEAK (after Day 10)
+- **Regime hard rules**: no FTD after correction → no CONFIRMED_UPTREND; 5+ dist days → cannot be CONFIRMED_UPTREND; 6+ dist days → CORRECTION; conflicts → conservative default
+- **Regime backward compat**: CONFIRMED_UPTREND→"bull", UPTREND_UNDER_PRESSURE→"neutral", FOLLOW_THROUGH_DAY→"neutral", RALLY_ATTEMPT→"bear", CORRECTION→"bear"
+- **Regime 5 data tools**: distribution days, market breadth (% above 200MA/50MA, highs/lows, A/D line), leading stock health (RS≥90 above 50MA), sector rankings (growth vs defensive), index price history (FTD detection)
 
 ### Valuation & risk metrics (estimated, no external API)
 
@@ -340,6 +351,8 @@ When LLM data is available, it overrides the deterministic estimates for P/E, Be
 - `tests/unit/test_educator_agent.py` — Level 2: educator pipeline tests, behavioral boundaries, end-to-end chain, golden dataset
 - `tests/unit/test_synthesis_schema.py` — Level 1: synthesis schema validation (key numbers, connections, contradictions, narrative lengths)
 - `tests/unit/test_synthesizer_agent.py` — Level 2: synthesizer pipeline tests, key number extraction, contradiction detection, behavioral boundaries
+- `tests/unit/test_regime_detector_schema.py` — Level 1: regime detector schema validation (enums, assessment models, validators, constants, backward-compat mapping)
+- `tests/unit/test_regime_detector_agent.py` — Level 2: regime detector pipeline tests, classifier functions, decision tree, safety rules (MUST/MUST_NOT), mock data, golden dataset, end-to-end chain
 - `tests/fixtures/conftest.py` — shared fixtures: `SAMPLE_IBD_STOCKS`, `PADDING_STOCKS`, `create_mock_xls()`, `create_mock_csv()`
 - `golden_datasets/research_golden.json` — expected tier assignments and keep candidates for sample data
 - `golden_datasets/analyst_golden.json` — expected tier assignments, elite results, IBD keeps, top sector
@@ -351,6 +364,7 @@ When LLM data is available, it overrides the deterministic estimates for P/E, Be
 - `golden_datasets/reconciler_golden.json` — expected 4 weeks, week 1 liquidation, 14 keeps
 - `golden_datasets/educator_golden.json` — expected min stock explanations, concepts, glossary, action items range
 - `golden_datasets/synthesis_golden.json` — expected key numbers fields, min connections, action items range, synthesis source
+- `golden_datasets/regime_detector_golden.json` — expected regime, confidence, exposure/health ranges, signal counts, legacy mapping for all 5 scenarios
 
 ### CrewAI compatibility
 

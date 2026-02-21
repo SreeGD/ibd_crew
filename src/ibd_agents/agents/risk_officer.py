@@ -29,6 +29,7 @@ except ImportError:
 
 if TYPE_CHECKING:
     from ibd_agents.schemas.analyst_output import AnalystOutput
+    from ibd_agents.schemas.pattern_output import PortfolioPatternOutput
 
 from ibd_agents.schemas.portfolio_output import PortfolioOutput
 from ibd_agents.schemas.risk_output import (
@@ -43,6 +44,7 @@ from ibd_agents.tools.risk_analyzer import (
     check_correlation,
     check_keeps,
     check_max_loss,
+    check_pattern_quality,
     check_position_sizing,
     check_regime_alignment,
     check_sector_concentration,
@@ -134,6 +136,7 @@ def run_risk_pipeline(
     portfolio_output: PortfolioOutput,
     strategy_output: SectorStrategyOutput,
     analyst_output: Optional["AnalystOutput"] = None,
+    pattern_output: Optional["PortfolioPatternOutput"] = None,
 ) -> RiskAssessment:
     """
     Run the deterministic risk assessment pipeline without LLM.
@@ -142,6 +145,7 @@ def run_risk_pipeline(
         portfolio_output: Validated PortfolioOutput from Agent 05
         strategy_output: Validated SectorStrategyOutput for regime info
         analyst_output: Optional AnalystOutput for per-stock conviction/volatility
+        pattern_output: Optional PortfolioPatternOutput for pattern quality check
 
     Returns:
         Validated RiskAssessment
@@ -151,7 +155,7 @@ def run_risk_pipeline(
     # Extract regime from strategy output
     regime = strategy_output.regime_adjustment.split()[0].lower()
 
-    # Step 1: Run all 10 checks
+    # Step 1: Run all 11 checks
     check_results = [
         check_position_sizing(portfolio_output),
         check_trailing_stops(portfolio_output),
@@ -163,6 +167,7 @@ def run_risk_pipeline(
         check_volume(portfolio_output),
         check_keeps(portfolio_output),
         run_stress_tests(portfolio_output),
+        check_pattern_quality(portfolio_output, pattern_output),
     ]
 
     # --- Step 1.5: LLM stop-loss tuning ---
@@ -298,7 +303,7 @@ def _build_summary(
     pass_count = sum(1 for c in check_results if c.status == "PASS")
     parts = [
         f"Risk Assessment: {overall_status}.",
-        f"{pass_count}/10 checks passed.",
+        f"{pass_count}/{len(check_results)} checks passed.",
     ]
     if vetoes:
         parts.append(f"{len(vetoes)} veto(s) require PM action.")

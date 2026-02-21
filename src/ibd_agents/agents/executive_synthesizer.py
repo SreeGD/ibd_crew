@@ -44,6 +44,7 @@ from ibd_agents.schemas.synthesis_output import (
     KeyNumbersDashboard,
     SynthesisOutput,
 )
+from ibd_agents.tools.token_tracker import track as track_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -613,9 +614,10 @@ RULES:
     try:
         response = client.messages.create(
             model=model,
-            max_tokens=2048,
+            max_tokens=1536,
             messages=[{"role": "user", "content": prompt}],
         )
+        track_tokens("_generate_llm_synthesis", response)
         text = response.content[0].text if response.content else ""
 
         # Try to parse JSON directly or from fenced block

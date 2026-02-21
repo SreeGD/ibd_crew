@@ -18,6 +18,8 @@ except ImportError:
     HAS_CREWAI = False
 from pydantic import BaseModel, Field
 
+from ibd_agents.tools.token_tracker import track as track_tokens
+
 logger = logging.getLogger(__name__)
 
 VALID_CAP_SIZES: set[str] = {"large", "mid", "small"}
@@ -237,9 +239,10 @@ def classify_caps_llm(
 
             response = client.messages.create(
                 model=model,
-                max_tokens=4096,
+                max_tokens=1024,
                 messages=[{"role": "user", "content": prompt}],
             )
+            track_tokens("classify_cap_sizes_llm", response)
             text = response.content[0].text if response.content else ""
 
             classified_count = 0

@@ -144,10 +144,10 @@ class TestRiskPipeline:
         assert isinstance(output, RiskAssessment)
 
     @pytest.mark.schema
-    def test_10_checks_present(self, pipeline_outputs):
+    def test_11_checks_present(self, pipeline_outputs):
         portfolio, strategy, _, _, _ = pipeline_outputs
         output = run_risk_pipeline(portfolio, strategy)
-        assert len(output.check_results) == 10
+        assert len(output.check_results) == 11
 
     @pytest.mark.schema
     def test_all_check_names_present(self, pipeline_outputs):
@@ -263,7 +263,7 @@ class TestEndToEndChain:
         risk = run_risk_pipeline(portfolio, strategy)
 
         assert isinstance(risk, RiskAssessment)
-        assert len(risk.check_results) == 10
+        assert len(risk.check_results) == 11
         assert risk.sleep_well_scores.overall_score >= 1
 
 
@@ -355,3 +355,164 @@ class TestSleepWellConviction:
             for f in factors
         )
         assert has_data_factor, f"Expected conviction/volatility factor in: {factors}"
+
+
+# ---------------------------------------------------------------------------
+# Pattern Quality Check Tests
+# ---------------------------------------------------------------------------
+
+from ibd_agents.tools.risk_analyzer import check_pattern_quality
+from ibd_agents.schemas.pattern_output import (
+    PortfolioPatternOutput,
+    PortfolioPatternSummary,
+    EnhancedStockAnalysis,
+    BaseScoreBreakdown,
+    PatternAlert,
+)
+
+
+def _make_enhanced_stock(symbol: str, enhanced_score: int, tier: int = 1) -> EnhancedStockAnalysis:
+    """Helper to create a minimal EnhancedStockAnalysis for testing."""
+    base = BaseScoreBreakdown(
+        ibd_score=min(40.0, enhanced_score * 0.4),
+        analyst_score=min(30.0, enhanced_score * 0.3),
+        risk_score=min(30.0, enhanced_score * 0.3),
+        base_total=enhanced_score,
+    )
+    label = "Review" if enhanced_score < 70 else ("Monitor" if enhanced_score < 85 else (
+        "Notable" if enhanced_score < 100 else "Favorable"))
+    stars = "★" if enhanced_score < 70 else ("★★" if enhanced_score < 85 else (
+        "★★★" if enhanced_score < 100 else "★★★★"))
+    return EnhancedStockAnalysis(
+        symbol=symbol, company_name=f"{symbol} Corp", sector="TECH",
+        tier=tier, base_score=base, pattern_score=None,
+        enhanced_score=enhanced_score, enhanced_rating=stars,
+        enhanced_rating_label=label, pattern_alerts=[],
+        scoring_source="deterministic",
+    )
+
+
+def _make_pattern_output(
+    stocks: list[EnhancedStockAnalysis],
+    alerts: list[PatternAlert] | None = None,
+) -> PortfolioPatternOutput:
+    """Helper to create a PortfolioPatternOutput for testing."""
+    return PortfolioPatternOutput(
+        stock_analyses=stocks,
+        pattern_alerts=alerts or [],
+        portfolio_summary=PortfolioPatternSummary(
+            total_stocks_scored=len(stocks),
+            stocks_with_patterns=0,
+            avg_enhanced_score=sum(s.enhanced_score for s in stocks) / max(len(stocks), 1),
+            tier_1_candidates=0, category_kings=0, inflection_alerts=0,
+            disruption_risks=sum(1 for a in (alerts or []) if a.alert_type == "Disruption Risk"),
+        ),
+        scoring_source="deterministic",
+        methodology_notes="Test pattern output",
+        analysis_date="2026-02-20",
+        summary="Test pattern output for risk officer pattern quality check testing with sample data",
+    )
+
+
+class TestPatternQualityCheck:
+    """Tests for the check_pattern_quality() risk check."""
+
+    @pytest.fixture
+    def portfolio(self):
+        portfolio, _, _, _, _ = _get_pipeline_outputs()
+        return portfolio
+
+    @pytest.mark.schema
+    def test_pass_no_data(self, portfolio):
+        """pattern_output=None → PASS (backward compatible)."""
+        result = check_pattern_quality(portfolio, pattern_output=None)
+        assert result.status == "PASS"
+        assert result.check_name == "pattern_quality"
+        assert "no pattern data" in result.findings.lower()
+
+    @pytest.mark.schema
+    def test_pass_strong_scores(self, portfolio):
+        """All stocks have enhanced_score >= 60 → PASS."""
+        # Create stocks matching portfolio symbols with strong scores
+        symbols = set()
+        for tier in [portfolio.tier_1, portfolio.tier_2, portfolio.tier_3]:
+            for p in tier.positions:
+                symbols.add(p.symbol)
+
+        stocks = [_make_enhanced_stock(sym, 85) for sym in list(symbols)[:5]]
+        pattern = _make_pattern_output(stocks)
+        result = check_pattern_quality(portfolio, pattern_output=pattern)
+        assert result.status == "PASS"
+
+    @pytest.mark.schema
+    def test_warning_weak_scores(self, portfolio):
+        """3+ portfolio positions with enhanced_score < 60 → WARNING."""
+        # Get actual portfolio symbols
+        symbols = []
+        for tier in [portfolio.tier_1, portfolio.tier_2, portfolio.tier_3]:
+            for p in tier.positions:
+                symbols.append(p.symbol)
+
+        # Create 3 weak stocks using portfolio symbols
+        stocks = [_make_enhanced_stock(sym, 40) for sym in symbols[:3]]
+        # Add some strong stocks too
+        stocks.extend([_make_enhanced_stock(sym, 90) for sym in symbols[3:6]])
+        pattern = _make_pattern_output(stocks)
+        result = check_pattern_quality(portfolio, pattern_output=pattern)
+        assert result.status == "WARNING"
+        assert "weak" in result.findings.lower()
+
+    @pytest.mark.schema
+    def test_warning_disruption_alerts(self, portfolio):
+        """2+ Disruption Risk alerts → WARNING."""
+        symbols = []
+        for tier in [portfolio.tier_1, portfolio.tier_2, portfolio.tier_3]:
+            for p in tier.positions:
+                symbols.append(p.symbol)
+
+        stocks = [_make_enhanced_stock(sym, 90) for sym in symbols[:5]]
+        alerts = [
+            PatternAlert(
+                alert_type="Disruption Risk", symbol=symbols[0],
+                description="Self-cannibalization score is zero indicating disruption vulnerability",
+                pattern_name="Self-Cannibalization", pattern_score=0,
+            ),
+            PatternAlert(
+                alert_type="Disruption Risk", symbol=symbols[1],
+                description="Self-cannibalization score is zero indicating disruption vulnerability",
+                pattern_name="Self-Cannibalization", pattern_score=0,
+            ),
+        ]
+        pattern = _make_pattern_output(stocks, alerts)
+        result = check_pattern_quality(portfolio, pattern_output=pattern)
+        assert result.status == "WARNING"
+        assert "disruption" in result.findings.lower()
+
+    @pytest.mark.schema
+    def test_pass_below_thresholds(self, portfolio):
+        """2 weak stocks and 1 disruption alert → still PASS."""
+        symbols = []
+        for tier in [portfolio.tier_1, portfolio.tier_2, portfolio.tier_3]:
+            for p in tier.positions:
+                symbols.append(p.symbol)
+
+        stocks = [_make_enhanced_stock(sym, 40) for sym in symbols[:2]]
+        stocks.extend([_make_enhanced_stock(sym, 90) for sym in symbols[2:6]])
+        alerts = [
+            PatternAlert(
+                alert_type="Disruption Risk", symbol=symbols[0],
+                description="Self-cannibalization score is zero indicating disruption vulnerability",
+                pattern_name="Self-Cannibalization", pattern_score=0,
+            ),
+        ]
+        pattern = _make_pattern_output(stocks, alerts)
+        result = check_pattern_quality(portfolio, pattern_output=pattern)
+        assert result.status == "PASS"
+
+    @pytest.mark.schema
+    def test_pipeline_includes_pattern_check(self):
+        """Full pipeline includes pattern_quality in check results."""
+        portfolio, strategy, _, _, _ = _get_pipeline_outputs()
+        output = run_risk_pipeline(portfolio, strategy)
+        names = {c.check_name for c in output.check_results}
+        assert "pattern_quality" in names

@@ -43,6 +43,8 @@ class CurrentHolding(BaseModel):
     market_value: float = Field(..., ge=0)
     account: str = Field(..., min_length=1)
     sector: str = Field(default="UNKNOWN")
+    cost_basis: Optional[float] = Field(None, ge=0, description="Total cost basis ($)")
+    gain_loss_pct: Optional[float] = Field(None, description="Gain/loss percentage")
 
     @field_validator("symbol")
     @classmethod

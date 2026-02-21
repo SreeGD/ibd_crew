@@ -15,6 +15,8 @@ import os
 import time
 from typing import Optional
 
+from ibd_agents.tools.token_tracker import track as track_tokens
+
 logger = logging.getLogger(__name__)
 
 
@@ -99,9 +101,10 @@ def enrich_rationale_llm(
 
             response = client.messages.create(
                 model=model,
-                max_tokens=4096,
+                max_tokens=2048,
                 messages=[{"role": "user", "content": prompt}],
             )
+            track_tokens("enrich_rationale_llm", response)
             text = response.content[0].text if response.content else ""
 
             parsed = _parse_reasoning_response(text, {a["symbol"] for a in batch})

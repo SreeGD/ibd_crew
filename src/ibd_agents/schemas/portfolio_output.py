@@ -110,6 +110,7 @@ class PortfolioPosition(BaseModel):
     volatility_adjustment: float = Field(0.0, ge=-2.0, le=2.0, description="LLM vol-based size adjustment %")
     sizing_source: Optional[str] = Field(None, description="'llm' or 'deterministic'")
     selection_source: Optional[str] = Field(None, description="'momentum'/'value'/'pattern'/'keep'")
+    momentum_adjustment: Optional[int] = Field(None, ge=-1, le=1, description="Historical momentum conviction adjustment")
 
     @field_validator("symbol")
     @classmethod

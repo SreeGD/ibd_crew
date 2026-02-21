@@ -24,6 +24,7 @@ from typing import Dict, List, Optional, TYPE_CHECKING
 if TYPE_CHECKING:
     from ibd_agents.schemas.value_investor_output import ValueInvestorOutput
     from ibd_agents.schemas.pattern_output import PortfolioPatternOutput
+    from ibd_agents.schemas.historical_output import HistoricalAnalysisOutput
 
 try:
     from crewai import Agent, Task
@@ -157,6 +158,7 @@ def run_portfolio_pipeline(
     analyst_output: AnalystOutput,
     value_output: Optional["ValueInvestorOutput"] = None,
     pattern_output: Optional["PortfolioPatternOutput"] = None,
+    historical_output: Optional["HistoricalAnalysisOutput"] = None,
 ) -> PortfolioOutput:
     """
     Run the deterministic portfolio construction pipeline without LLM.
@@ -166,6 +168,7 @@ def run_portfolio_pipeline(
         analyst_output: Validated AnalystOutput from Agent 02
         value_output: Optional ValueInvestorOutput from Agent 11 (~10% carve-out)
         pattern_output: Optional PortfolioPatternOutput from Agent 12 (~10% carve-out)
+        historical_output: Optional HistoricalAnalysisOutput from Agent 13 (momentum adjustment)
 
     Returns:
         Validated PortfolioOutput
@@ -222,6 +225,29 @@ def run_portfolio_pipeline(
     tier_2_pos = [p for p in all_positions if p.tier == 2]
     tier_3_pos = [p for p in all_positions if p.tier == 3]
 
+    # --- Step 5.3: Historical momentum adjustments ---
+    if historical_output is not None:
+        momentum_map = _build_momentum_map(historical_output)
+        if momentum_map:
+            logger.info("[Agent 05] Applying historical momentum adjustments ...")
+            adj_count = 0
+            for p_list in [tier_1_pos, tier_2_pos, tier_3_pos]:
+                for idx, p in enumerate(p_list):
+                    direction = momentum_map.get(p.symbol)
+                    if direction is None or direction == "stable":
+                        continue
+                    adjustment = 1 if direction == "improving" else -1
+                    new_conviction = max(1, min(10, p.conviction + adjustment))
+                    if new_conviction != p.conviction:
+                        new_target = size_position(p.tier, p.asset_type, new_conviction)
+                        p_list[idx] = p.model_copy(update={
+                            "conviction": new_conviction,
+                            "target_pct": new_target,
+                            "momentum_adjustment": adjustment,
+                        })
+                        adj_count += 1
+            logger.info(f"[Agent 05] Momentum: {adj_count} positions adjusted")
+
     # --- Step 5.5: LLM dynamic sizing ---
     try:
         from ibd_agents.tools.dynamic_sizing import enrich_sizing_llm, compute_size_adjustment
@@ -264,6 +290,7 @@ def run_portfolio_pipeline(
                             volatility_adjustment=adj,
                             sizing_source="llm",
                             selection_source=p.selection_source,
+                            momentum_adjustment=p.momentum_adjustment,
                         )
                         sizing_count += 1
                     else:
@@ -283,6 +310,7 @@ def run_portfolio_pipeline(
                             volatility_adjustment=0.0,
                             sizing_source="deterministic",
                             selection_source=p.selection_source,
+                            momentum_adjustment=p.momentum_adjustment,
                         )
             logger.info(f"LLM dynamic sizing: {sizing_count}/{len(all_positions)} positions adjusted")
         else:
@@ -304,6 +332,7 @@ def run_portfolio_pipeline(
                         volatility_adjustment=0.0,
                         sizing_source="deterministic",
                         selection_source=p.selection_source,
+                        momentum_adjustment=p.momentum_adjustment,
                     )
     except Exception as e:
         logger.warning(f"LLM dynamic sizing failed: {e}")
@@ -326,6 +355,7 @@ def run_portfolio_pipeline(
                         volatility_adjustment=0.0,
                         sizing_source="deterministic",
                         selection_source=p.selection_source,
+                        momentum_adjustment=p.momentum_adjustment,
                     )
 
     # Compute actual percentages
@@ -820,23 +850,7 @@ def _normalize_tier(
 
     normalized: list[PortfolioPosition] = []
     for p, new_pct in zip(positions, pcts):
-        normalized.append(PortfolioPosition(
-            symbol=p.symbol,
-            company_name=p.company_name,
-            sector=p.sector,
-            cap_size=p.cap_size,
-            tier=p.tier,
-            asset_type=p.asset_type,
-            target_pct=new_pct,
-            trailing_stop_pct=p.trailing_stop_pct,
-            max_loss_pct=p.max_loss_pct,
-            keep_category=p.keep_category,
-            conviction=p.conviction,
-            reasoning=p.reasoning,
-            volatility_adjustment=p.volatility_adjustment,
-            sizing_source=p.sizing_source,
-            selection_source=p.selection_source,
-        ))
+        normalized.append(p.model_copy(update={"target_pct": new_pct}))
 
     return normalized
 
@@ -949,3 +963,16 @@ def _build_summary(
         f"All 14 keeps placed. Framework v4.0 constraints applied."
     )
     return summary
+
+
+def _build_momentum_map(
+    historical_output: Optional["HistoricalAnalysisOutput"],
+) -> dict[str, str]:
+    """Build symbol → momentum_direction map from historical analysis."""
+    if historical_output is None:
+        return {}
+    return {
+        sa.symbol: sa.momentum_direction
+        for sa in historical_output.stock_analyses
+        if sa.momentum_direction in ("improving", "stable", "deteriorating")
+    }

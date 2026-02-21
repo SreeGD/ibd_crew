@@ -26,6 +26,8 @@ except ImportError:
     from pydantic import BaseModel as BaseTool
 from pydantic import BaseModel, Field
 
+from ibd_agents.tools.token_tracker import track as track_tokens
+
 
 # ---------------------------------------------------------------------------
 # Market Constants
@@ -644,9 +646,10 @@ def enrich_valuation_llm(
 
             response = client.messages.create(
                 model=model,
-                max_tokens=8192,
+                max_tokens=4096,
                 messages=[{"role": "user", "content": prompt}],
             )
+            track_tokens("enrich_valuation_llm", response)
             text = response.content[0].text if response.content else ""
 
             # Parse JSON array from response

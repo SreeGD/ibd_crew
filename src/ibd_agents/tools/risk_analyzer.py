@@ -3,7 +3,7 @@ Risk Officer Tool: Risk Analysis & Stress Testing
 IBD Momentum Investment Framework v4.0
 
 Pure functions for:
-- 10-point risk check pipeline
+- 11-point risk check pipeline
 - Stress test scenarios
 - Sleep Well score computation
 
@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional
 
 if TYPE_CHECKING:
     from ibd_agents.schemas.analyst_output import AnalystOutput
+    from ibd_agents.schemas.pattern_output import PortfolioPatternOutput
 
 try:
     from crewai.tools import BaseTool
@@ -338,6 +339,80 @@ def run_stress_tests(portfolio: PortfolioOutput) -> RiskCheck:
     )
 
 
+def check_pattern_quality(
+    portfolio: PortfolioOutput,
+    pattern_output: Optional["PortfolioPatternOutput"] = None,
+) -> RiskCheck:
+    """Check 11: Pattern quality assessment.
+
+    WARNING if:
+    - 3+ portfolio positions have enhanced_score < 60 (weak pattern quality)
+    - 2+ "Disruption Risk" alerts
+
+    PASS if pattern_output is None (backward compatible).
+    """
+    if pattern_output is None:
+        return RiskCheck(
+            check_name="pattern_quality",
+            status="PASS",
+            findings="Pattern quality check: no pattern data available, skipping assessment",
+            details=["Pattern analysis not run — check passes by default"],
+        )
+
+    # Build set of portfolio symbols for filtering
+    portfolio_symbols = set()
+    for tier in [portfolio.tier_1, portfolio.tier_2, portfolio.tier_3]:
+        for p in tier.positions:
+            portfolio_symbols.add(p.symbol)
+
+    issues: list[str] = []
+    weak_count = 0
+    disruption_count = 0
+    imbalance_count = 0
+
+    for sa in pattern_output.stock_analyses:
+        if sa.symbol in portfolio_symbols and sa.enhanced_score < 60:
+            weak_count += 1
+            issues.append(
+                f"{sa.symbol}: weak pattern score {sa.enhanced_score}/150"
+            )
+
+    for alert in pattern_output.pattern_alerts:
+        if alert.alert_type == "Disruption Risk":
+            disruption_count += 1
+            issues.append(
+                f"{alert.symbol}: Disruption Risk — {alert.description[:80]}"
+            )
+        elif alert.alert_type == "Pattern Imbalance":
+            imbalance_count += 1
+            issues.append(
+                f"{alert.symbol}: Pattern Imbalance — {alert.description[:80]}"
+            )
+
+    if weak_count >= 3 or disruption_count >= 2:
+        return RiskCheck(
+            check_name="pattern_quality",
+            status="WARNING",
+            findings=(
+                f"Pattern quality concerns: {weak_count} weak stocks (score<60), "
+                f"{disruption_count} disruption risks, {imbalance_count} imbalances"
+            ),
+            details=issues[:10],
+        )
+
+    scored = len(pattern_output.stock_analyses)
+    with_patterns = pattern_output.portfolio_summary.stocks_with_patterns
+    return RiskCheck(
+        check_name="pattern_quality",
+        status="PASS",
+        findings=(
+            f"Pattern quality acceptable: {scored} stocks scored, "
+            f"{with_patterns} with patterns, {weak_count} weak"
+        ),
+        details=[],
+    )
+
+
 # ---------------------------------------------------------------------------
 # Stress Test Report Builder
 # ---------------------------------------------------------------------------
@@ -548,13 +623,13 @@ class RiskAnalyzerInput(BaseModel):
 
 
 class RiskAnalyzerTool(BaseTool):
-    """Run 10-point risk check pipeline on portfolio."""
+    """Run 11-point risk check pipeline on portfolio."""
 
     name: str = "risk_analyzer"
     description: str = (
-        "Run 10-point risk assessment on portfolio: position sizing, "
+        "Run 11-point risk assessment on portfolio: position sizing, "
         "stops, concentration, allocation, max loss, correlation, "
-        "regime, volume, keeps, stress tests"
+        "regime, volume, keeps, stress tests, pattern quality"
     )
     args_schema: type[BaseModel] = RiskAnalyzerInput
 
@@ -573,6 +648,7 @@ class RiskAnalyzerTool(BaseTool):
             check_volume(portfolio),
             check_keeps(portfolio),
             run_stress_tests(portfolio),
+            check_pattern_quality(portfolio),
         ]
 
         return json.dumps([c.model_dump() for c in checks], indent=2)

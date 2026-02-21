@@ -16,7 +16,10 @@ from __future__ import annotations
 import logging
 from collections import defaultdict
 from dataclasses import dataclass, field as dc_field
-from typing import Dict, List
+from typing import TYPE_CHECKING, Dict, List, Optional
+
+if TYPE_CHECKING:
+    from ibd_agents.schemas.value_investor_output import ValueInvestorOutput
 
 try:
     from crewai.tools import BaseTool
@@ -86,10 +89,15 @@ QUALITY_COMPOSITE_THRESHOLD = 95    # composite >= this
 QUALITY_RS_THRESHOLD = 90           # rs >= this
 QUALITY_SHARPE_THRESHOLD = 1.0      # sharpe >= this
 
-# Rule 5: Turnover cap
+# Rule 5: Value shield — protect strong value stocks from liquidation
+VALUE_SHIELD_MIN_SCORE = 60.0       # value_score >= this
+VALUE_SHIELD_CATEGORIES = {"Quality Value", "GARP", "Deep Value"}
+VALUE_SHIELD_MAX_TRAP_RISK = {"None", "Low"}  # value_trap_risk_level in these
+
+# Rule 6: Turnover cap
 MAX_TURNOVER_RATIO = 0.50           # max 50% of actions can be SELL+BUY
 
-# Rule 6: Graduated sell target
+# Rule 7: Graduated sell target
 GRADUATED_TRIM_TARGET_PCT = 0.4     # target_pct for converted positions
 GRADUATED_TRIM_WEEK = 3             # week for converted trims
 
@@ -107,13 +115,16 @@ class SellQualityContext:
     etf_map: dict[str, dict] = dc_field(default_factory=dict)
     # Market regime: "bull", "bear", "neutral", or None
     regime: str | None = None
+    # symbol -> {value_score, value_category, value_trap_risk_level}
+    value_map: dict[str, dict] = dc_field(default_factory=dict)
 
 
 def build_sell_quality_context(
     analyst_output=None,
     rotation_output=None,
+    value_output: Optional["ValueInvestorOutput"] = None,
 ) -> SellQualityContext:
-    """Build lookup context from analyst and rotation data.
+    """Build lookup context from analyst, rotation, and value data.
 
     Returns empty context if no data is provided (no conversions will happen).
     """
@@ -139,6 +150,14 @@ def build_sell_quality_context(
 
     if rotation_output is not None:
         ctx.regime = rotation_output.market_regime.regime
+
+    if value_output is not None:
+        for vs in value_output.value_stocks:
+            ctx.value_map[vs.symbol] = {
+                "value_score": vs.value_score,
+                "value_category": vs.value_category,
+                "value_trap_risk_level": vs.value_trap_risk_level,
+            }
 
     return ctx
 
@@ -187,6 +206,18 @@ def _check_sell_shield(
         if etf_info["etf_score"] >= STRONG_ETF_SCORE_THRESHOLD:
             return True, f"Strong ETF (score={etf_info['etf_score']:.1f})"
 
+    # Rule 5: Value shield — protect strong value stocks from liquidation
+    value_info = ctx.value_map.get(sym)
+    if value_info:
+        if (value_info["value_score"] >= VALUE_SHIELD_MIN_SCORE
+                and value_info["value_category"] in VALUE_SHIELD_CATEGORIES
+                and value_info["value_trap_risk_level"] in VALUE_SHIELD_MAX_TRAP_RISK):
+            return True, (
+                f"Value shield: {value_info['value_category']} "
+                f"(score={value_info['value_score']:.0f}, "
+                f"trap_risk={value_info['value_trap_risk_level']})"
+            )
+
     return False, ""
 
 
@@ -197,8 +228,8 @@ def apply_sell_quality_gate(
 ) -> list[PositionAction]:
     """Review SELL actions and convert eligible ones to graduated TRIMs.
 
-    Applies per-position shields (rules 1-4), then turnover cap (rule 5).
-    Converted TRIMs get a small target_pct and later-week scheduling (rule 6).
+    Applies per-position shields (rules 1-5), then turnover cap (rule 6).
+    Converted TRIMs get a small target_pct and later-week scheduling (rule 7).
 
     Args:
         actions: List of PositionAction from diff_positions()
@@ -208,14 +239,14 @@ def apply_sell_quality_gate(
     Returns:
         Modified list of PositionAction with some SELLs converted to TRIMs
     """
-    if not ctx.stock_map and not ctx.etf_map and ctx.regime is None:
-        # No analyst or regime data — cannot evaluate quality, return unchanged
+    if not ctx.stock_map and not ctx.etf_map and ctx.regime is None and not ctx.value_map:
+        # No analyst, regime, or value data — cannot evaluate quality, return unchanged
         return actions
 
     converted_indices: list[int] = []
     reasons: dict[str, str] = {}
 
-    # --- Pass 1: Per-position shields (rules 1-4) ---
+    # --- Pass 1: Per-position shields (rules 1-5) ---
     for idx, action in enumerate(actions):
         if action.action_type != "SELL":
             continue
@@ -225,7 +256,7 @@ def apply_sell_quality_gate(
             converted_indices.append(idx)
             reasons[action.symbol] = reason
 
-    # --- Pass 2: Turnover cap (rule 5) ---
+    # --- Pass 2: Turnover cap (rule 6) ---
     remaining_sell_count = sum(
         1 for i, a in enumerate(actions)
         if a.action_type == "SELL" and i not in converted_indices
